@@ -1,0 +1,184 @@
+syntax = "proto3";
+
+package optimus.protocol;
+
+enum WorkerState {
+    UNKNOWN = 0;
+    AVAILABLE = 1;
+    BUSY = 2;
+    UNAVAILABLE = 3;
+}
+
+enum JobState {
+    JOB_UNKNOWN = 0;
+    JOB_PENDING = 1;
+    JOB_RUNNING = 2;
+    JOB_COMPLETED = 3;
+    JOB_FAILED = 4;
+    JOB_STOPPED = 5;
+}
+
+message StatusRequest {
+    bool probe_only = 1;
+}
+
+message StatusResponse {
+    string worker_id = 1;
+    string hostname = 2;
+    uint32 protocol_version = 3;
+    WorkerState status = 4;
+    uint32 active_job_count = 5;
+    uint64 uptime_seconds = 6;
+}
+
+message ResourceRequest {
+    bool detailed = 1;
+}
+
+message ResourceResponse {
+    string worker_id = 1;
+    string hostname = 2;
+    WorkerState status = 3;
+    float cpu_percent = 4;
+    uint64 ram_total_mb = 5;
+    uint64 ram_available_mb = 6;
+    uint64 cache_disk_total_gb = 7;
+    uint64 cache_disk_available_gb = 8;
+    float temperature_c = 9;
+    bool temperature_available = 10;
+    uint32 active_jobs = 11;
+}
+
+message CacheSummaryRequest {
+    string dataset_id = 1;
+    string dataset_version = 2;
+}
+
+message CacheSummaryResponse {
+    string worker_id = 1;
+    string dataset_id = 2;
+    string dataset_version = 3;
+    uint64 cached_files_count = 4;
+    uint64 total_cached_bytes = 5;
+    uint64 cache_hits = 6;
+    uint64 cache_misses = 7;
+    uint64 downloaded_bytes = 8;
+    uint64 registry_revision = 9;
+}
+
+message CacheInventoryRequest {
+    string dataset_id = 1;
+    string dataset_version = 2;
+    uint64 known_revision = 3;
+    uint32 page_number = 4;
+    uint32 page_size = 5;
+}
+
+message CachedFileEntry {
+    string relative_path = 1;
+    uint64 file_size = 2;
+    string sha256 = 3;
+    bool valid = 4;
+    double last_access_time = 5;
+}
+
+message CacheInventoryResponse {
+    string worker_id = 1;
+    string dataset_id = 2;
+    string dataset_version = 3;
+    uint64 registry_revision = 4;
+    bool revision_matched = 5;
+    repeated CachedFileEntry files = 6;
+    uint32 current_page = 7;
+    uint32 total_pages = 8;
+    uint64 total_cached_bytes = 9;
+    uint64 total_cached_files = 10;
+}
+
+message JobSubmit {
+    string job_id = 1;
+    string dataset_id = 2;
+    string dataset_version = 3;
+    uint32 rank = 4;
+    uint32 world_size = 5;
+    string master_addr = 6;
+    uint32 master_port = 7;
+    string checkpoint_dir = 8;
+    string training_entrypoint = 9;
+    string training_args_json = 10;
+    uint64 required_ram_mb = 11;
+    bool resume_from_checkpoint = 12;
+    string resume_checkpoint_path = 13;
+}
+
+message JobResponse {
+    string job_id = 1;
+    bool accepted = 2;
+    string rejection_reason = 3;
+    uint64 reserved_ram_mb = 4;
+}
+
+message JobStatusRequest {
+    string job_id = 1;
+}
+
+message JobStatusResponse {
+    string job_id = 1;
+    string worker_id = 2;
+    uint32 rank = 3;
+    JobState status = 4;
+    uint32 epoch = 5;
+    uint64 global_step = 6;
+    string error_message = 7;
+    double loss = 8;
+    double throughput_samples_per_sec = 9;
+}
+
+message JobStop {
+    string job_id = 1;
+    string reason = 2;
+    bool graceful = 3;
+}
+
+message ShutdownRequest {
+    string reason = 1;
+    bool force = 2;
+}
+
+message ErrorResponse {
+    string error_code = 1;
+    string error_message = 2;
+}
+
+message Envelope {
+    uint32 protocol_version = 1;
+    string message_id = 2;
+    string sender_id = 3;
+    uint64 timestamp_ms = 4;
+    string auth_token = 5;
+
+    oneof payload {
+        StatusRequest status_request = 10;
+        StatusResponse status_response = 11;
+
+        ResourceRequest resource_request = 12;
+        ResourceResponse resource_response = 13;
+
+        CacheInventoryRequest cache_inventory_request = 14;
+        CacheInventoryResponse cache_inventory_response = 15;
+
+        CacheSummaryRequest cache_summary_request = 16;
+        CacheSummaryResponse cache_summary_response = 17;
+
+        JobSubmit job_submit = 18;
+        JobResponse job_response = 19;
+
+        JobStatusRequest job_status_request = 20;
+        JobStatusResponse job_status_response = 21;
+
+        JobStop job_stop = 22;
+        ShutdownRequest shutdown_request = 23;
+
+        ErrorResponse error_response = 24;
+    }
+}

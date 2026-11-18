@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: optimus
+Version: 0.1.0
+Summary: Lightweight Distributed ML Training System for Raspberry Pi clusters
+Author: Optimus Systems Team
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: protobuf>=4.21.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: psutil>=5.9.0
+Requires-Dist: torch>=2.0.0
+Requires-Dist: torchvision>=0.15.0
+Requires-Dist: fastapi>=0.100.0
+Requires-Dist: uvicorn>=0.20.0

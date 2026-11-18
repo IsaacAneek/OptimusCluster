@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+*.o
+src/optimus/cache/fuse_cache
+logs/*.log
+runs/*
+!runs/evaluation_results.csv

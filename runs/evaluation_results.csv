@@ -1,0 +1,4 @@
+scenario,time_sec,throughput_mb_s,cached_files,speedup_vs_cold
+Baseline Origin Access,0.0015,4099.20,0,37.21
+Optimus Cold Cache,0.0567,110.16,100,1.00
+Optimus Warm Cache,0.0583,107.24,100,0.97

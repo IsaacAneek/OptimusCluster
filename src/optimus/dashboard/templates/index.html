@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Optimus Cluster Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="header">
+        <div class="container header-content">
+            <div class="logo">
+                <span class="logo-accent">Optimus</span> Cluster
+            </div>
+            <div class="header-actions">
+                <button id="btn-refresh" class="btn btn-secondary">Refresh Probes</button>
+            </div>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- Overview Cards -->
+        <section class="section">
+            <h2 class="section-title">Overview</h2>
+            <div class="grid grid-5">
+                <div class="card">
+                    <div class="card-label">Controller Host</div>
+                    <div id="val-controller" class="card-value">-</div>
+                </div>
+                <div class="card">
+                    <div class="card-label">Available Workers</div>
+                    <div id="val-available" class="card-value text-success">-</div>
+                </div>
+                <div class="card">
+                    <div class="card-label">Unavailable Workers</div>
+                    <div id="val-unavailable" class="card-value text-danger">-</div>
+                </div>
+                <div class="card">
+                    <div class="card-label">Active Training Jobs</div>
+                    <div id="val-jobs" class="card-value text-primary">-</div>
+                </div>
+                <div class="card">
+                    <div class="card-label">Total Cached Data</div>
+                    <div id="val-cached" class="card-value">-</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Workers Table -->
+        <section class="section">
+            <h2 class="section-title">Workers</h2>
+            <div class="table-container">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Worker ID</th>
+                            <th>Hostname</th>
+                            <th>Status</th>
+                            <th>CPU</th>
+                            <th>Available RAM</th>
+                            <th>Cache Disk Avail</th>
+                            <th>Temperature</th>
+                            <th>Active Jobs</th>
+                        </tr>
+                    </thead>
+                    <tbody id="workers-body">
+                        <tr><td colspan="8" class="text-muted">Loading worker nodes...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Scheduler Section -->
+        <section class="section">
+            <h2 class="section-title">Scheduler</h2>
+            <div class="card">
+                <form id="schedule-form" class="schedule-form">
+                    <div class="form-group">
+                        <label for="sched-dataset">Dataset ID</label>
+                        <input type="text" id="sched-dataset" name="dataset_id" value="animals" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="sched-version">Version</label>
+                        <input type="text" id="sched-version" name="dataset_version" value="v1" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="sched-workers">Worker Count</label>
+                        <input type="number" id="sched-workers" name="workers" value="2" min="1" max="16" required>
+                    </div>
+                    <div class="form-group align-end">
+                        <button type="submit" id="btn-schedule" class="btn btn-primary">Schedule Workers</button>
+                    </div>
+                </form>
+
+                <div id="schedule-result" class="schedule-result hidden">
+                    <h3 class="subsection-title">Scheduled Ranks (<span id="res-job-id"></span>)</h3>
+                    <div class="table-container">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>Rank</th>
+                                    <th>Hostname</th>
+                                    <th>Locality</th>
+                                    <th>Cached Bytes</th>
+                                    <th>Total Bytes</th>
+                                    <th>Score</th>
+                                </tr>
+                            </thead>
+                            <tbody id="schedule-nodes-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Dataset Cache -->
+        <section class="section">
+            <h2 class="section-title">Dataset Cache Observability</h2>
+            <div class="table-container">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Hostname</th>
+                            <th>Dataset</th>
+                            <th>Version</th>
+                            <th>Cached Files</th>
+                            <th>Cached Bytes</th>
+                            <th>Hits</th>
+                            <th>Misses</th>
+                            <th>Revision</th>
+                        </tr>
+                    </thead>
+                    <tbody id="cache-body">
+                        <tr><td colspan="8" class="text-muted">Loading cache summaries...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Active Jobs -->
+        <section class="section">
+            <h2 class="section-title">Training Jobs</h2>
+            <div class="table-container">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Job ID</th>
+                            <th>Dataset</th>
+                            <th>Status</th>
+                            <th>Epoch</th>
+                            <th>Step</th>
+                            <th>Loss</th>
+                            <th>Restarts</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="jobs-body">
+                        <tr><td colspan="8" class="text-muted">No active training jobs recorded</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <script src="/static/main.js"></script>
+</body>
+</html>

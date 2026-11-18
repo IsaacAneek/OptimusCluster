@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "optimus"
+version = "0.1.0"
+description = "Lightweight Distributed ML Training System for Raspberry Pi clusters"
+authors = [
+    {name = "Optimus Systems Team"}
+]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "protobuf>=4.21.0",
+    "pyyaml>=6.0",
+    "psutil>=5.9.0",
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0"
+]
+
+[project.scripts]
+optimus-worker = "optimus.worker.daemon:main"
+optimus-cluster = "optimus.cluster:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
