@@ -416,32 +416,85 @@ print("Trained model artifact:", metrics["final_model_path"])
    ```bash
    sudo apt-get update
    sudo apt-get install -y build-essential libfuse3-dev fuse3 libsqlite3-dev \
-       nfs-common avahi-daemon python3-pip
+       libssl-dev nfs-common avahi-daemon python3-pip python3-protobuf python3-yaml
    ```
 
-2. **Mount Directories & FUSE Build**:
+2. **Mount Directories & NFS Mount**:
    ```bash
-   sudo mkdir -p /mnt/nfs-origin /mnt/dataset /var/cache/optimus
-   sudo chown -R $USER:$USER /mnt/dataset /var/cache/optimus
+   sudo mkdir -p /mnt/nfs-origin /mnt/dataset /var/cache/optimus /srv/checkpoints
+   sudo chown -R $USER:$USER /mnt/dataset /var/cache/optimus /srv/checkpoints
 
-   # Mount controller authoritative export
-   sudo mount -t nfs -o ro,hard,intr isaac.local:/srv/datasets /mnt/nfs-origin
-
-   # Build FUSE caching binary
-   make -C src/optimus/cache
+   # Mount controller authoritative exports
+   sudo mount -t nfs -o ro,soft,timeo=30 isaac.local:/srv/datasets /mnt/nfs-origin
+   sudo mount -t nfs -o rw,soft,timeo=30 isaac.local:/srv/checkpoints /srv/checkpoints
    ```
 
-3. **Mount FUSE Cache**:
+3. **Build FUSE Cache Binary**:
    ```bash
-   ./src/optimus/cache/fuse_cache \
-       --origin=/mnt/nfs-origin/animals/v1 \
-       --cache-dir=/var/cache/optimus/files/animals/v1 \
-       /mnt/dataset
+   cd ~/OptimusDL/src/optimus/cache
+   make clean && make
    ```
 
-4. **Run Worker Daemon**:
+4. **Install Optimus Package**:
    ```bash
-   optimus-worker --config config.yaml --hostname $(hostname).local
+   cd ~/OptimusDL
+   pip3 install -e . --no-deps --break-system-packages
+   ```
+
+5. **Run Worker Daemon as a Systemd Service (Recommended)**:
+   Create `/etc/systemd/system/optimus-worker.service`:
+   ```ini
+   [Unit]
+   Description=Optimus Worker Daemon
+   After=network.target
+
+   [Service]
+   Type=simple
+   User=pi
+   WorkingDirectory=/home/pi/OptimusDL
+   ExecStart=/usr/bin/python3 -m optimus.worker.daemon --config /home/pi/OptimusDL/config.yaml
+   Restart=always
+   RestartSec=3
+   StandardOutput=journal
+   StandardError=journal
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+   Enable and start the service:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now optimus-worker
+   sudo systemctl status optimus-worker
+   ```
+
+   *(Alternatively, run in the foreground for debugging: `python3 -m optimus.worker.daemon --config config.yaml`)*
+
+---
+
+### 10.3 Cluster Verification & Execution
+
+1. **Probe Cluster Status & Worker Telemetry**:
+   ```bash
+   python cluster.py --config config.yaml
+   # Or continuous watch mode:
+   python cluster.py --config config.yaml --watch
+   ```
+
+2. **Launch Observability Web Dashboard**:
+   ```bash
+   uvicorn optimus.dashboard.app:app --host 0.0.0.0 --port 8080
+   ```
+   Open [http://localhost:8080](http://localhost:8080) to inspect worker availability, CPU/RAM/thermals, and cache inventory.
+
+3. **Run Distributed ResNet-18 Training Example**:
+   ```bash
+   python example/train_resnet.py
+   ```
+
+4. **Run System Test Suite**:
+   ```bash
+   pytest test/ -v
    ```
 
 ---
