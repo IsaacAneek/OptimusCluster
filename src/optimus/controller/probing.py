@@ -180,6 +180,7 @@ class ProbeManager:
             start_t = time.time()
             try:
                 self.probe_all()
+                self.probe_all_resources()
             except Exception as e:
                 logger.error(f"Error during scheduled probe: {e}")
             elapsed = time.time() - start_t

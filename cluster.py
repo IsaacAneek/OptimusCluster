@@ -68,6 +68,7 @@ def main():
 
     logger.info(f"Probing {len(config.workers)} configured workers...")
     probe_mgr.probe_all()
+    probe_mgr.probe_all_resources()
     print("\n--- Worker Availability Table ---")
     print(probe_mgr.format_worker_table())
     print("---------------------------------\n")
@@ -78,6 +79,7 @@ def main():
             while True:
                 time.sleep(config.communication.probe_interval)
                 probe_mgr.probe_all()
+                probe_mgr.probe_all_resources()
                 print("\033[H\033[J", end="")  # Clear screen
                 print(f"--- Worker Availability Table (Updated: {time.strftime('%Y-%m-%d %H:%M:%S')}) ---")
                 print(probe_mgr.format_worker_table())
