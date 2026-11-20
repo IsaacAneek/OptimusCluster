@@ -76,11 +76,26 @@ class Trainer:
 
         # 2. Package training parameters
         model_name = "default"
-        if hasattr(self.model, "__class__") and "resnet" in self.model.__class__.__name__.lower():
+        class_name = self.model.__class__.__name__.lower() if hasattr(self.model, "__class__") else ""
+        if "resnet" in class_name:
             model_name = "resnet18"
+        elif any(k in class_name for k in ("cifar", "cnn", "conv")):
+            model_name = "cifar10_cnn"
+        elif hasattr(self.model, "model_name"):
+            model_name = self.model.model_name
+
+        num_classes = getattr(self.model, "num_classes", 10)
+        if hasattr(self.model, "fc") and hasattr(self.model.fc, "out_features"):
+            num_classes = self.model.fc.out_features
+        elif hasattr(self.model, "classifier"):
+            for m in reversed(list(self.model.classifier.modules())):
+                if hasattr(m, "out_features"):
+                    num_classes = m.out_features
+                    break
 
         training_args = {
             "model": model_name,
+            "num_classes": num_classes,
             "epochs": self.epochs,
             "batch_size": self.batch_size,
             "lr": self.lr,

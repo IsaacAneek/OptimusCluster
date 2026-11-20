@@ -32,6 +32,38 @@ def get_logger(rank: int):
     return logging.LoggerAdapter(logger, extra)
 
 
+class CIFAR10CNN(nn.Module):
+    """4-layer Convolutional Neural Network tailored for 32x32 CIFAR-10 image classification on CPU."""
+
+    def __init__(self, num_classes: int = 10):
+        super().__init__()
+        self.num_classes = num_classes
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+        )
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(128 * 4 * 4, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(128, num_classes),
+        )
+
+    def forward(self, x):
+        return self.classifier(self.features(x))
+
+
 def update_status_file(
     logs_dir: str,
     job_id: str,
@@ -90,18 +122,59 @@ def run_training():
 
     checkpoint_mgr = CheckpointManager(base_dir=checkpoint_dir, job_id=job_id)
 
-    # 2. Setup model and optimizer
+    # 2. Check for real dataset on NFS/local storage
+    dataset = None
+    dataset_dir = None
+    for cand in [
+        f"/mnt/nfs-origin/{dataset_id}/{dataset_version}",
+        f"/srv/datasets/{dataset_id}/{dataset_version}",
+    ]:
+        if os.path.isdir(cand):
+            dataset_dir = cand
+            break
+
+    if dataset_dir:
+        subdirs = [
+            d for d in os.listdir(dataset_dir)
+            if os.path.isdir(os.path.join(dataset_dir, d))
+            and not d.startswith(".") and not d.startswith("tmp")
+        ]
+        if subdirs:
+            try:
+                from torchvision import transforms
+                from torchvision.datasets import ImageFolder
+                transform = transforms.Compose([
+                    transforms.Resize((32, 32)),
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+                ])
+                dataset = ImageFolder(dataset_dir, transform=transform)
+                logger.info(
+                    f"Loaded ImageFolder dataset from '{dataset_dir}' with {len(dataset)} samples across {len(dataset.classes)} classes"
+                )
+            except Exception as e:
+                logger.warning(f"Could not load ImageFolder from '{dataset_dir}': {e}. Falling back to synthetic tensors")
+                dataset = None
+
+    # Setup model and optimizer
     model_type = training_args.get("model", "default")
-    num_classes = training_args.get("num_classes", 2)
+    num_classes = training_args.get("num_classes", len(dataset.classes) if dataset and hasattr(dataset, "classes") else 10)
 
     if model_type == "resnet18":
         from torchvision.models import resnet18
         model = resnet18(weights=None)
         in_features = model.fc.in_features
         model.fc = nn.Linear(in_features, num_classes)
-        # ResNet takes [B, 3, H, W]
-        x_data = torch.randn(training_args.get("num_samples", 100), 3, 32, 32)
-        y_data = torch.randint(0, num_classes, (training_args.get("num_samples", 100),))
+        if dataset is None:
+            x_data = torch.randn(training_args.get("num_samples", 100), 3, 32, 32)
+            y_data = torch.randint(0, num_classes, (training_args.get("num_samples", 100),))
+            dataset = TensorDataset(x_data, y_data)
+    elif model_type in ("cifar10_cnn", "cifar_cnn", "convnet", "cnn"):
+        model = CIFAR10CNN(num_classes=num_classes)
+        if dataset is None:
+            x_data = torch.randn(training_args.get("num_samples", 100), 3, 32, 32)
+            y_data = torch.randint(0, num_classes, (training_args.get("num_samples", 100),))
+            dataset = TensorDataset(x_data, y_data)
     else:
         hidden_dim = training_args.get("hidden_dim", 64)
         model = nn.Sequential(
@@ -109,8 +182,10 @@ def run_training():
             nn.ReLU(),
             nn.Linear(hidden_dim, num_classes),
         )
-        x_data = torch.randn(training_args.get("num_samples", 1000), 32)
-        y_data = torch.randint(0, num_classes, (training_args.get("num_samples", 1000),))
+        if dataset is None:
+            x_data = torch.randn(training_args.get("num_samples", 1000), 32)
+            y_data = torch.randint(0, num_classes, (training_args.get("num_samples", 1000),))
+            dataset = TensorDataset(x_data, y_data)
 
     optimizer = torch.optim.SGD(model.parameters(), lr=training_args.get("lr", 0.01))
     criterion = nn.CrossEntropyLoss()
@@ -135,8 +210,6 @@ def run_training():
     # 4. Construct dataset and distributed sampler
     batch_size = training_args.get("batch_size", 32)
     epochs = training_args.get("epochs", 5)
-
-    dataset = TensorDataset(x_data, y_data)
 
     sampler = OptimusDistributedSampler(
         dataset,
