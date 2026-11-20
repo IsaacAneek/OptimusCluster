@@ -2,19 +2,19 @@
 
 Optimus is an ultra-lightweight, resilient distributed machine learning training platform engineered specifically for edge clusters composed of multiple Raspberry Pi 5 nodes coordinated by a designated Linux controller workstation (`isaac.local`).
 
-Optimus abstracts distributed infrastructure so ML developers write ordinary PyTorch training scripts using the custom Optimus SDK. The backend transparently orchestrates worker discovery, controller-initiated health and telemetry probing, full-file FUSE caching over NFS, locality-aware scheduling, PyTorch DistributedDataParallel (DDP) over Gloo, atomic checkpointing, and fail-stop recovery.
+Optimus abstracts distributed infrastructure so ML developers write ordinary PyTorch training scripts using the custom Optimus SDK. The backend transparently orchestrates worker discovery via Nmap and Avahi, single-roundtrip hardware telemetry probing, pure-Python atomic caching with streaming SHA-256 verification over NFS, locality-aware weighted scheduling, PyTorch DistributedDataParallel (DDP) over Gloo, atomic checkpointing with per-node verification, and fail-stop recovery.
 
 ---
 
 ## Table of Contents
 
-1. [Architectural Principles & The 80/20 Rule](#1-architectural-principles--the-8020-rule)
+1. [Architectural Principles & Streamlined Design](#1-architectural-principles--streamlined-design)
 2. [Cluster Topology & Hardware Model](#2-cluster-topology--hardware-model)
-3. [Binary Framing & Protocol Buffers Specification](#3-binary-framing--protocol-buffers-specification)
-4. [Authoritative Dataset & Full-File FUSE Caching Architecture](#4-authoritative-dataset--full-file-fuse-caching-architecture)
+3. [Binary TCP Framing & Lightweight Protocol](#3-binary-tcp-framing--lightweight-protocol)
+4. [Authoritative Datasets & Pure-Python Atomic Caching](#4-authoritative-datasets--pure-python-atomic-caching)
 5. [Worker SQLite Cache Registry](#5-worker-sqlite-cache-registry)
 6. [Locality-Aware Weighted Scheduler](#6-locality-aware-weighted-scheduler)
-7. [PyTorch DDP & Fail-Stop Fault Tolerance](#7-pytorch-ddp--fail-stop-fault-tolerance)
+7. [PyTorch Gloo DDP & Fail-Stop Fault Tolerance](#7-pytorch-gloo-ddp--fail-stop-fault-tolerance)
 8. [Web Dashboard & REST Observability](#8-web-dashboard--rest-observability)
 9. [Developer-Facing SDK Manual](#9-developer-facing-sdk-manual)
 10. [Installation & Deployment Guide](#10-installation--deployment-guide)
@@ -23,28 +23,30 @@ Optimus abstracts distributed infrastructure so ML developers write ordinary PyT
 
 ---
 
-## 1. Architectural Principles & The 80/20 Rule
+## 1. Architectural Principles & Streamlined Design
 
-Optimus eliminates complex distributed systems frameworks (Kubernetes, Ray, Slurm, Prometheus, Raft) in favor of deterministic Linux OS primitives, direct TCP sockets, Protocol Buffers, POSIX atomic file operations, and SQLite WAL transactions:
+Optimus eliminates complex distributed systems frameworks (Kubernetes, Ray, Slurm, Prometheus, Raft) and heavyweight external binary dependencies in favor of deterministic Linux OS primitives, direct TCP sockets, length-prefixed JSON serialization, POSIX atomic file operations, and SQLite WAL transactions:
 
 - **Controller-Initiated Probing (Zero Worker Heartbeats)**:
-  Worker nodes remain strictly passive TCP listeners. They never initiate background heartbeats or broadcast unsolicited resource metrics. The controller polls workers on demand (`StatusRequest`, `ResourceRequest`, `CacheInventoryRequest`). If a worker misses 3 consecutive probes, the controller marks it `UNAVAILABLE`.
-- **Authoritative Dataset & Full-File Caching**:
-  The controller maintains immutable dataset versions exported read-only via standard NFS (`/srv/datasets`). Workers mount NFS at `/mnt/nfs-origin` and access data exclusively via a C FUSE3 filesystem mounted at `/mnt/dataset`. On cache miss, the complete file is retrieved, verified with streaming SHA-256, and atomically published locally. On cache hit, zero NFS traffic occurs.
+  Worker nodes remain strictly passive TCP listeners on port `45870`. They never initiate background heartbeats or broadcast unsolicited resource metrics. The controller polls workers on demand (`StatusRequest`, `ResourceRequest`, `CacheInventoryRequest`, `CheckpointListRequest`) in consolidated single-roundtrip telemetry exchanges. If a worker misses 3 consecutive probes, the controller marks it `UNAVAILABLE`.
+- **Pure-Python Atomic Caching (No C/FUSE Overhead)**:
+  The controller maintains immutable dataset versions exported read-only via standard NFS (`/srv/datasets`). Workers mount NFS at `/mnt/nfs-origin` and access data via an atomic, multi-process safe Python cache engine (`fcntl.flock`). On cache miss, the file is streamed in 64 KiB chunks, verified with streaming SHA-256, and atomically committed to `/var/cache/optimus/`. On cache hit, reads are served locally with zero NFS traffic.
 - **Locality-Weighted Rank Assignment**:
   A single scheduler scores candidate workers using RAM headroom, CPU load, thermal health, disk capacity, and dataset locality (byte-weighted). Both the Python SDK and the Web Dashboard execute the identical scheduler algorithm.
-- **CPU DDP via Gloo**:
-  Distributed training uses PyTorch's native `DistributedDataParallel` with the Gloo CPU backend optimized for Raspberry Pi 5 ARM Cortex-A76 cores without requiring CUDA.
+- **CPU DDP via Gloo with Dynamic Interface Binding**:
+  Distributed training uses PyTorch's native `DistributedDataParallel` with the Gloo CPU backend optimized for Raspberry Pi 5 ARM Cortex-A76 cores without requiring CUDA. Optimus automatically detects the active LAN interface (`eth0`) and resolves rendezvous IPs dynamically, preventing multi-node Debian loopback (`127.0.1.1`) binding errors.
 - **Fail-Stop Recovery**:
   If a worker crashes or drops out, the controller stops all remaining workers in that DDP group, selects replacement nodes, and relaunches the complete group restoring from the latest atomic checkpoint on shared storage.
+- **Saved Checkpoint Observability Across Nodes**:
+  Rank 0 workers commit atomic checkpoints at each epoch to shared storage (`/srv/checkpoints`). The controller and web dashboard actively verify checkpoint presence and mount status across every individual node (`pi02.local`, `pi03.local`, `isaac.local`).
 
 ```
 +---------------------------------------------------------------------------------------+
 |                              CONTROLLER (isaac.local)                                 |
 |                                                                                       |
 |   +-------------------+    +----------------------+    +--------------------------+   |
-|   |   Optimus SDK     |    |   Node Discovery     |    |   Health & Resource      |   |
-|   | (Dataset/Trainer) |    |   (Avahi / Nmap)     |    |   Probing Manager        |   |
+|   |   Optimus SDK     |    |   Node Discovery     |    |   Consolidated Probing   |   |
+|   | (Dataset/Trainer) |    |   (Avahi / Nmap)     |    |   (Hardware Telemetry)   |   |
 |   +---------+---------+    +----------+-----------+    +------------+-------------+   |
 |             |                         |                             |                 |
 |   +---------v---------+    +----------v-----------+    +------------v-------------+   |
@@ -55,7 +57,7 @@ Optimus eliminates complex distributed systems frameworks (Kubernetes, Ray, Slur
 |                                       v                                               |
 |                             [ selected_nodes.json ]                                   |
 +---------------------------------------|-----------------------------------------------+
-                                        | Binary TCP Framing (Protobuf)
+                                        | Length-Prefixed JSON Framing over TCP :45870
          +------------------------------+-------------------------------+
          |                                                              |
          v                                                              v
@@ -70,15 +72,18 @@ Optimus eliminates complex distributed systems frameworks (Kubernetes, Ray, Slur
 |  +------------v------------+  |              |  +------------v-------------+  |
 |  | Training Subprocess     |  |              |  | Training Subprocess      |  |
 |  | (PyTorch Gloo DDP)      |<-+--- Gloo -----+->| (PyTorch Gloo DDP)       |  |
-|  +------------+------------+  |   AllReduce  |  +------------+-------------+  |
+|  +------------+------------+  |  (eth0 Mesh) |  +------------+-------------+  |
 |               |               |              |               |                |
 |  +------------v------------+  |              |  +------------v-------------+  |
-|  | /mnt/dataset            |  |              |  | /mnt/dataset             |  |
-|  | (FUSE Cache + SQLite)   |  |              |  | (FUSE Cache + SQLite)    |  |
+|  | /var/cache/optimus      |  |              |  | /var/cache/optimus       |  |
+|  | (Pure-Python flock)     |  |              |  | (Pure-Python flock)      |  |
 |  +------------+------------+  |              |  +------------+-------------+  |
 |               | (on miss)     |              |               | (on miss)      |
 |  +------------v------------+  |              |  +------------v-------------+  |
 |  | /mnt/nfs-origin (NFS)   |  |              |  | /mnt/nfs-origin (NFS)    |  |
+|  +-------------------------+  |              |  +--------------------------+  |
+|  | /srv/checkpoints (NFS)  |  |              |  | /srv/checkpoints (NFS)   |  |
+|  +-------------------------+  |              |  +--------------------------+  |
 +-------------------------------+              +--------------------------------+
 ```
 
@@ -86,22 +91,22 @@ Optimus eliminates complex distributed systems frameworks (Kubernetes, Ray, Slur
 
 ## 2. Cluster Topology & Hardware Model
 
-- **Controller Machine**:
+- **Controller Workstation**:
   - Ubuntu Workstation: `isaac.local` (`192.168.10.127/24`)
-  - Responsibilities: Authoritative storage, NFS server, discovery, scheduling, DDP dispatch, checkpoint verification, and dashboard.
+  - Responsibilities: Authoritative dataset storage (`/srv/datasets`), NFS server, discovery, scheduling, DDP dispatch, checkpoint verification, and dashboard.
 - **Worker Nodes**:
-  - Edge Nodes: Raspberry Pi 5 (Quad-core ARM Cortex-A76, 4GB/8GB RAM, Gigabit LAN)
-  - Typical mDNS hostnames: `pi02.local`, `pi03.local`
-  - Responsibilities: Passive TCP daemon, local SQLite cache database, C FUSE caching filesystem, training subprocess executor.
+  - Edge Nodes: Raspberry Pi 5 (Quad-core ARM Cortex-A76, 8GB RAM, Gigabit LAN)
+  - Typical mDNS hostnames: `pi02.local` (`192.168.10.150`), `pi03.local` (`192.168.10.101`)
+  - Responsibilities: Passive TCP daemon (`optimus-worker.service`), local SQLite cache database, atomic cache manager, training subprocess executor.
 
 ---
 
-## 3. Binary Framing & Protocol Buffers Specification
+## 3. Binary TCP Framing & Lightweight Protocol
 
-Workers and the controller exchange serialized Protocol Buffers messages over persistent TCP connections. HTTP/REST is forbidden for node control.
+Workers and the controller communicate over persistent TCP connections. HTTP/REST is used solely for the browser dashboard; inter-node cluster control uses direct TCP sockets on port `45870`.
 
 ### 3.1 4-Byte Big-Endian Framing
-TCP is a byte stream. Every frame is preceded by an unsigned 4-byte big-endian payload length:
+Every frame is preceded by an unsigned 4-byte big-endian payload length:
 
 ```
 0                   1                   2                   3
@@ -110,7 +115,7 @@ TCP is a byte stream. Every frame is preceded by an unsigned 4-byte big-endian p
 |                 Payload Length (uint32, >I)                   |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                                                               |
-|             Serialized Envelope (Protocol Buffers)            |
+|             Serialized JSON Envelope Payload                  |
 |                     Length <= 4,194,304 bytes                 |
 |                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -118,39 +123,22 @@ TCP is a byte stream. Every frame is preceded by an unsigned 4-byte big-endian p
 
 The receiver validates `length <= max_message_size` (4 MiB) and uses `recv_exact` loops to prevent partial reads or stream desynchronization.
 
-### 3.2 Envelope Structure (`src/optimus/protocol/messages.proto`)
+### 3.2 Pure-Python Envelope Structure (`src/optimus/protocol/messages.py`)
+Eliminates Google Protobuf runtime and compiler complexity while retaining structured envelopes, cryptographic cluster tokens, and strict type safety:
 
-```protobuf
-message Envelope {
-    uint32 protocol_version = 1;
-    string message_id = 2;
-    string sender_id = 3;
-    uint64 timestamp_ms = 4;
-    string auth_token = 5;
-
-    oneof payload {
-        StatusRequest status_request = 10;
-        StatusResponse status_response = 11;
-        ResourceRequest resource_request = 12;
-        ResourceResponse resource_response = 13;
-        CacheInventoryRequest cache_inventory_request = 14;
-        CacheInventoryResponse cache_inventory_response = 15;
-        CacheSummaryRequest cache_summary_request = 16;
-        CacheSummaryResponse cache_summary_response = 17;
-        JobSubmit job_submit = 18;
-        JobResponse job_response = 19;
-        JobStatusRequest job_status_request = 20;
-        JobStatusResponse job_status_response = 21;
-        JobStop job_stop = 22;
-        ShutdownRequest shutdown_request = 23;
-        ErrorResponse error_response = 24;
-    }
-}
-```
+- **Supported Payloads**:
+  - `status_request` / `status_response`: Basic availability, active job count, uptime.
+  - `resource_request` / `resource_response`: CPU load, RAM total/available, disk capacity, SoC thermals.
+  - `cache_summary_request` / `cache_summary_response`: Per-dataset cache hits, misses, downloaded bytes, registry revision.
+  - `cache_inventory_request` / `cache_inventory_response`: Paginated file inventory with SHA-256 digests.
+  - `job_submit` / `job_response`: Spawns training subprocess with DDP rank assignments.
+  - `job_status_request` / `job_status_response`: Polls training epoch, step, loss, throughput.
+  - `job_stop`: Terminates active training subprocess.
+  - `checkpoint_list_request` / `checkpoint_list_response`: Scans and reports saved checkpoints, disk space, and mount status on that node.
 
 ---
 
-## 4. Authoritative Dataset & Full-File FUSE Caching Architecture
+## 4. Authoritative Datasets & Pure-Python Atomic Caching
 
 ### 4.1 Immutable Dataset Versions & Cryptographic Manifests
 The controller manages datasets under `/srv/datasets/<dataset_id>/<version>/`. When prepared, the controller walks the tree and generates `manifest.json`:
@@ -158,31 +146,24 @@ The controller manages datasets under `/srv/datasets/<dataset_id>/<version>/`. W
 {
   "dataset_id": "animals",
   "version": "v1",
-  "total_bytes": 496800,
-  "total_files": 40,
+  "total_bytes": 1242000,
+  "total_files": 100,
   "files": [
-    { "path": "cat/001.png", "size": 12420, "sha256": "3a7b..." },
-    { "path": "dog/002.png", "size": 12420, "sha256": "8f1c..." }
+    { "path": "cat/img_0000.png", "size": 12420, "sha256": "3a7b..." },
+    { "path": "dog/img_0000.png", "size": 12420, "sha256": "8f1c..." }
   ]
 }
 ```
-Datasets are strictly immutable. Updating a dataset requires creating a new version (`v2`), preventing complex distributed cache invalidation.
+Datasets are strictly immutable. Updating a dataset requires creating a new version (`v2`), preventing complex distributed cache invalidation bugs.
 
-### 4.2 C FUSE Filesystem Implementation (`src/optimus/cache/fuse_cache.c`)
-- **Compilation**: Written in C against `libfuse3`, `libsqlite3`, and `libssl` (`OpenSSL 3+`).
-- **Deferred Download on `getattr`**: `getattr()` checks the local cache file, falling back to `lstat()` on the origin NFS directory. It never downloads file content. This prevents directory traversals (`os.walk`, `ls -l`, dataset indexing) from triggering massive network storms.
-- **Process-Shared Locking on Cache Miss**:
-  When an application opens an uncached file:
-  1. Opens `/var/cache/optimus/locks/<rel_path>.lock`.
-  2. Acquires process-shared lock via `flock(fd, LOCK_EX)`.
-  3. Rechecks SQLite `cached_files` (in case a concurrent thread downloaded it while waiting).
-  4. Opens origin file at `/mnt/nfs-origin/<dataset_id>/<version>/<rel_path>`.
-  5. Creates temporary file `/var/cache/optimus/temporary/<file>.<pid>.<rand>.downloading`.
-  6. Streams file in 64 KiB chunks while computing SHA-256 on the fly.
-  7. Calls `fsync(temp_fd)` and atomically renames (`rename(2)`) to `/var/cache/optimus/files/<rel_path>`.
-  8. Commits record to SQLite `cached_files` and increments `registry_revision`.
-  9. Releases lock (`flock(fd, LOCK_UN)`).
-  10. Opens local file descriptor, saves in `fi->fh`, and serves `read()` requests directly via `pread()`.
+### 4.2 Multi-Process Atomic Cache Engine (`src/optimus/cache/manager.py`)
+Replaces C FUSE filesystems with a pure-Python atomic caching layer:
+1. **Concurrency Control**: Acquires an exclusive lock on `/var/cache/optimus/locks/<rel_path>.lock` using `fcntl.flock(fd, LOCK_EX)`.
+2. **Double-Checked Locking**: Checks the local SQLite registry to verify if another process downloaded the file while waiting.
+3. **Streaming Verification**: Streams file from NFS `/mnt/nfs-origin/` into `/var/cache/optimus/temporary/<file>.<pid>.downloading` in 64 KiB chunks while computing SHA-256 on the fly.
+4. **Digest Validation**: If SHA-256 matches the manifest, calls `os.fsync()` and atomically renames the file to `/var/cache/optimus/files/<rel_path>`.
+5. **Registry Update**: Records the entry into SQLite WAL database and increments `registry_revision`.
+6. **Subsequent Reads**: Process opens local cache file descriptor with zero NFS network traffic.
 
 ---
 
@@ -221,7 +202,7 @@ CREATE TABLE cache_statistics (
 ```
 
 ### 5.1 Cache Inventory Polling & Monotonic Revisions
-To avoid transmitting large inventories repeatedly, each commit increments `registry_revision`. When the controller queries `CacheInventoryRequest(known_revision=N)`:
+To avoid transmitting large file inventories repeatedly, each commit increments `registry_revision`. When the controller queries `CacheInventoryRequest(known_revision=N)`:
 - If `known_revision == registry_revision`, the worker returns `revision_matched = True` with 0 file entries.
 - If revisions differ, the worker streams paginated inventory records (`CachedFileEntry`).
 
@@ -247,13 +228,13 @@ Where:
 - $\text{ram} = \min\left(1.0, \frac{\text{ram\_available\_mb}}{\max(\text{eligible RAMs})}\right)$.
 - $\text{cpu} = 1.0 - \left(\frac{\text{cpu\_percent}}{100.0}\right)$.
 - $\text{disk} = \min\left(1.0, \frac{\text{cache\_disk\_available\_gb}}{\max(\text{eligible Disks})}\right)$.
-- $\text{thermal} = \max\left(0.0, 1.0 - \frac{\max(0.0, \text{temp\_c} - 35.0)}{50.0}\right)$. If thermal telemetry is unavailable, thermal weight is omitted and remaining weights are renormalized.
+- $\text{thermal} = \max\left(0.0, 1.0 - \frac{\max(0.0, \text{temp\_c} - 35.0)}{50.0}\right)$.
 
 ### 6.3 Atomic Artifact Generation
-Top $K = \text{world\_size}$ nodes are assigned ranks $0 \dots K-1$. The scheduler atomically commits `runs/<job_id>/selected_nodes.json`:
+Top $K = \text{world\_size}$ nodes are assigned ranks $0 \dots K-1$. The scheduler commits `runs/<job_id>/selected_nodes.json`:
 ```json
 {
-  "job_id": "job-95620cf5",
+  "job_id": "job-4a414015",
   "dataset_id": "animals",
   "dataset_version": "v1",
   "world_size": 2,
@@ -261,20 +242,16 @@ Top $K = \text{world\_size}$ nodes are assigned ranks $0 \dots K-1$. The schedul
     {
       "hostname": "pi02.local",
       "port": 45870,
+      "worker_id": "worker-pi02",
       "rank": 0,
-      "cached_bytes": 496800,
-      "required_bytes": 496800,
-      "cache_locality": 1.0,
-      "score": 0.9421
+      "score": 0.4827
     },
     {
       "hostname": "pi03.local",
       "port": 45870,
+      "worker_id": "worker-pi03",
       "rank": 1,
-      "cached_bytes": 248400,
-      "required_bytes": 496800,
-      "cache_locality": 0.5,
-      "score": 0.6915
+      "score": 0.4493
     }
   ]
 }
@@ -282,21 +259,23 @@ Top $K = \text{world\_size}$ nodes are assigned ranks $0 \dots K-1$. The schedul
 
 ---
 
-## 7. PyTorch DDP & Fail-Stop Fault Tolerance
+## 7. PyTorch Gloo DDP & Fail-Stop Fault Tolerance
 
-### 7.1 Distributed Process Startup
+### 7.1 Distributed Process Startup & Dynamic Gloo Binding
 1. The controller reads `selected_nodes.json` and issues `JobSubmit` to each node.
-2. Worker daemons validate memory headroom, reserve resources, and spawn `src/optimus/training/worker_entry.py`.
-3. Standard DDP environment variables are injected:
+2. Worker daemons validate memory headroom, reserve resources, and launch `optimus.training.worker_entry`.
+3. Optimus automatically detects the active non-loopback network interface (e.g. `eth0`) and resolves `MASTER_ADDR` to the direct IPv4 address (`192.168.10.150:29500`). This completely avoids Debian `/etc/hosts` loopback binding issues (`127.0.1.1`).
+4. Injected environment variables:
    - `RANK`: assigned rank.
    - `WORLD_SIZE`: total ranks.
-   - `MASTER_ADDR`: Rank 0 hostname/IP.
+   - `MASTER_ADDR`: Rank 0 resolved IP address.
    - `MASTER_PORT`: rendezvous port (29500+).
+   - `GLOO_SOCKET_IFNAME`: active network interface (`eth0`).
 
-### 7.2 Atomic Checkpoints on Shared NFS
+### 7.2 Atomic Checkpoints on Shared Storage
 Rank 0 commits checkpoints to `/srv/checkpoints/<job_id>/checkpoint-<epoch>/`:
-- `model.pt`: model weights.
-- `optimizer.pt`: optimizer state.
+- `model.pt`: model weights state dictionary.
+- `optimizer.pt`: optimizer state dictionary.
 - `rng.pt`: PyTorch CPU/CUDA random generator states.
 - `metadata.json`: epoch, global step, loss, dataset version.
 Written to a `.tmp` directory, flushed, and atomically renamed. `latest.json` is atomically updated, and older checkpoints are pruned (retaining the 3 newest).
@@ -315,17 +294,33 @@ If any worker drops out during training:
 
 ## 8. Web Dashboard & REST Observability
 
-Hosted exclusively on the controller at `http://isaac.local:8080`.
+Hosted on the controller at `http://isaac.local:8080`.
 
-- **Minimalist Aesthetic**: Clean white background with one primary accent color (`#2563eb`).
+- **UI Structure & Theme**: Designed following **Claude.ai's layout** (left sidebar navigation, top header, clean card canvas) and **VSCode White theme**:
+  - Primary color (`#0066b8`) for important sections, active tabs, and highlights.
+  - Black (`#000000`) for text.
+  - White (`#ffffff`) and light surfaces (`#f8f9fa`, `#e5e5e5`) for borders and backgrounds.
+  - Strict zero-other-colors design.
+- **Dedicated Dashboard Views**:
+  - **Overview**: Real-time worker availability counts, active jobs, cached bytes, and saved checkpoints summary card.
+  - **LAN Topology Discovery**: Scans subnet via `nmap -sn` and resolves reverse mDNS names via `avahi-resolve -a` to classify gateways, controllers, active workers, and LAN devices.
+  - **Cluster Workers**: Detailed per-worker telemetry (CPU %, available RAM, disk capacity, thermals, uptime).
+  - **Locality Scheduler**: Form to test rank allocation across nodes for any dataset.
+  - **Distributed Training Jobs**: Monitors active PyTorch DDP runs, epochs, steps, loss, and restarts.
+  - **Dataset Cache**: Local cache inventory and SHA-256 verification stats.
+  - **Saved Checkpoints**: Node storage & mount verification strip (`isaac.local`, `pi02.local`, `pi03.local`), node filter bar, checkpoint inventory table (with origin Rank 0, verified nodes pills, loss, size), and interactive metadata JSON inspector.
 - **REST Endpoints**:
-  - `GET /`: Serves dashboard UI.
-  - `GET /api/overview`: Cluster stats, active workers, cached bytes.
+  - `GET /`: Serves the dashboard web app.
+  - `GET /api/overview`: Cluster stats, active workers, cached bytes, total checkpoints.
   - `GET /api/workers`: Live CPU %, RAM, thermals, disk, status.
+  - `GET /api/discovery`: Returns discovered LAN topology hosts.
+  - `POST /api/discovery/scan`: Triggers an active Nmap subnet sweep and Avahi mDNS resolution.
   - `GET /api/cache`: Per-node cache hits, misses, downloaded bytes.
   - `POST /api/schedule`: Invokes the scheduler and returns selected nodes.
   - `GET /api/jobs`: Active and completed jobs list.
   - `POST /api/jobs/{job_id}/stop`: Gracefully terminates a running job.
+  - `GET /api/checkpoints`: Scans cluster and queries workers over TCP for verified saved checkpoints.
+  - `GET /api/checkpoints/{job_id}/{checkpoint_name}/metadata`: Returns raw metadata JSON.
   - `POST /api/probe`: Forces fresh hardware telemetry probe across cluster.
 
 ---
@@ -341,6 +336,9 @@ from optimus import Optimus, Dataset, Trainer
 
 # 1. Connect to cluster controller
 cluster = Optimus(config="config.yaml")
+
+# Check worker health and telemetry
+print(cluster.probe())
 
 # 2. Define authoritative dataset
 dataset = Dataset(
@@ -359,16 +357,19 @@ trainer = Trainer(
     model=model,
     dataset=dataset,
     optimizer=optimizer,
-    epochs=10,
+    epochs=3,
     workers=2,
     batch_size=16
 )
 
-# 5. Fit model across cluster
+# 5. Fit model across Raspberry Pi cluster
 metrics = trainer.fit()
 
 # 6. Final model weights are loaded directly onto controller
 print("Trained model artifact:", metrics["final_model_path"])
+if os.path.isfile(metrics["final_model_path"]):
+    model.load_state_dict(torch.load(metrics["final_model_path"], map_location="cpu"))
+    print("Final model state successfully loaded into local model!")
 ```
 
 ---
@@ -380,8 +381,7 @@ print("Trained model artifact:", metrics["final_model_path"])
 1. **System Packages**:
    ```bash
    sudo apt-get update
-   sudo apt-get install -y build-essential libfuse3-dev fuse3 libsqlite3-dev \
-       protobuf-compiler nmap avahi-utils nfs-kernel-server python3-pip
+   sudo apt-get install -y nmap avahi-utils nfs-kernel-server python3-pip
    ```
 
 2. **Python Dependencies**:
@@ -410,38 +410,34 @@ print("Trained model artifact:", metrics["final_model_path"])
    uvicorn optimus.dashboard.app:app --host 0.0.0.0 --port 8080
    ```
 
+---
+
 ### 10.2 Worker Node Setup (Raspberry Pi 5)
 
 1. **System Packages**:
    ```bash
    sudo apt-get update
-   sudo apt-get install -y build-essential libfuse3-dev fuse3 libsqlite3-dev \
-       libssl-dev nfs-common avahi-daemon python3-pip python3-protobuf python3-yaml
+   sudo apt-get install -y nfs-common avahi-daemon python3-pip python3-yaml
    ```
 
-2. **Mount Directories & NFS Mount**:
+2. **Mount Directories & NFS Mounts**:
    ```bash
-   sudo mkdir -p /mnt/nfs-origin /mnt/dataset /var/cache/optimus /srv/checkpoints
-   sudo chown -R $USER:$USER /mnt/dataset /var/cache/optimus /srv/checkpoints
+   sudo mkdir -p /mnt/nfs-origin /var/cache/optimus /srv/checkpoints
+   sudo chown -R pi:pi /var/cache/optimus /srv/checkpoints
 
    # Mount controller authoritative exports
-   sudo mount -t nfs -o ro,soft,timeo=30 isaac.local:/srv/datasets /mnt/nfs-origin
-   sudo mount -t nfs -o rw,soft,timeo=30 isaac.local:/srv/checkpoints /srv/checkpoints
+   sudo mount -t nfs -o ro,soft,timeo=30 192.168.10.127:/srv/datasets /mnt/nfs-origin
+   sudo mount -t nfs -o rw,soft,timeo=30 192.168.10.127:/srv/checkpoints /srv/checkpoints
    ```
+   *(To persist mounts across reboots, add them to `/etc/fstab`)*.
 
-3. **Build FUSE Cache Binary**:
-   ```bash
-   cd ~/OptimusDL/src/optimus/cache
-   make clean && make
-   ```
-
-4. **Install Optimus Package**:
+3. **Install Optimus Package**:
    ```bash
    cd ~/OptimusDL
    pip3 install -e . --no-deps --break-system-packages
    ```
 
-5. **Run Worker Daemon as a Systemd Service (Recommended)**:
+4. **Run Worker Daemon via Systemd**:
    Create `/etc/systemd/system/optimus-worker.service`:
    ```ini
    [Unit]
@@ -468,29 +464,25 @@ print("Trained model artifact:", metrics["final_model_path"])
    sudo systemctl status optimus-worker
    ```
 
-   *(Alternatively, run in the foreground for debugging: `python3 -m optimus.worker.daemon --config config.yaml`)*
-
 ---
 
 ### 10.3 Cluster Verification & Execution
 
-1. **Probe Cluster Status & Worker Telemetry**:
+1. **Generate Sample Image Dataset**:
    ```bash
-   python cluster.py --config config.yaml
-   # Or continuous watch mode:
-   python cluster.py --config config.yaml --watch
+   python example/example_dataset.py --output /srv/datasets/animals/v1 --images-per-class 50
    ```
 
-2. **Launch Observability Web Dashboard**:
-   ```bash
-   uvicorn optimus.dashboard.app:app --host 0.0.0.0 --port 8080
-   ```
-   Open [http://localhost:8080](http://localhost:8080) to inspect worker availability, CPU/RAM/thermals, and cache inventory.
-
-3. **Run Distributed ResNet-18 Training Example**:
+2. **Run Distributed ResNet-18 Training Example**:
    ```bash
    python example/train_resnet.py
    ```
+
+3. **Launch Observability Web Dashboard**:
+   ```bash
+   uvicorn optimus.dashboard.app:app --host 0.0.0.0 --port 8080
+   ```
+   Open **http://localhost:8080** in your browser to inspect worker availability, hardware telemetry, LAN topology, and saved checkpoints.
 
 4. **Run System Test Suite**:
    ```bash
@@ -525,7 +517,6 @@ python3 example/evaluate_performance.py
 
 ```
 optimus/
-|-- cluster.py                   # Master cluster CLI (validation & watch)
 |-- config.yaml                  # Cluster configuration
 |-- requirements.txt             # Python dependencies
 |-- pyproject.toml               # Package build metadata
@@ -540,15 +531,15 @@ optimus/
 |       |-- trainer.py           # Managed Trainer API
 |       |
 |       |-- protocol/
-|       |   |-- messages.proto   # Protocol Buffers schema
+|       |   |-- messages.py      # Pure-Python message dataclasses & JSON envelopes
 |       |   |-- framing.py       # 4-byte big-endian TCP framing
-|       |   |-- generated/       # Generated protobuf classes
+|       |   |-- generated/       # Backward-compatibility stub
 |       |
 |       |-- controller/
 |       |   |-- communication.py # Persistent TCP client pool
-|       |   |-- probing.py       # Controller-initiated health prober
-|       |   |-- discovery.py     # Avahi mDNS + Nmap scanner
-|       |   |-- dataset_manager.py # NFS dataset publisher
+|       |   |-- probing.py       # Single-roundtrip health & hardware prober
+|       |   |-- discovery.py     # Nmap subnet sweep & Avahi mDNS LAN scanner
+|       |   |-- dataset_manager.py # NFS dataset publisher & manifest verifier
 |       |   |-- cache_registry.py  # Cluster cache coordinator
 |       |   |-- scheduler.py     # Weighted locality scheduler
 |       |   |-- launcher.py      # DDP remote rank launcher
@@ -556,26 +547,24 @@ optimus/
 |       |   |-- checkpoint.py    # Atomic checkpoint manager
 |       |
 |       |-- worker/
-|       |   |-- server.py        # Passive TCP listener
+|       |   |-- server.py        # Passive TCP listener & checkpoint reporter
 |       |   |-- daemon.py        # Worker daemon process
 |       |   |-- resource_info.py # CPU, RAM, thermal reader
-|       |   |-- executor.py      # Subprocess DDP runner
+|       |   |-- executor.py      # Subprocess DDP runner with dynamic Gloo binding
 |       |
 |       |-- cache/
-|       |   |-- fuse_cache.c     # Full-file FUSE3 caching in C
-|       |   |-- Makefile         # FUSE cache compilation
-|       |   |-- registry.py      # SQLite cache database
-|       |   |-- manager.py       # Cache reconciliation
+|       |   |-- manager.py       # Pure-Python atomic cache engine (fcntl.flock)
+|       |   |-- registry.py      # SQLite cache database (WAL mode)
 |       |
 |       |-- training/
-|       |   |-- ddp.py           # Gloo process group setup
+|       |   |-- ddp.py           # Gloo process group setup & auto interface binding
 |       |   |-- sampler.py       # DistributedSampler wrapper
 |       |   |-- worker_entry.py  # Worker DDP training entrypoint
 |       |
 |       |-- dashboard/
-|           |-- app.py           # FastAPI application
-|           |-- templates/       # Clean HTML UI
-|           |-- static/          # CSS & JavaScript
+|           |-- app.py           # FastAPI application & checkpoint verification API
+|           |-- templates/       # Claude.ai layout HTML templates
+|           |-- static/          # VSCode White theme CSS & JavaScript
 |
 |-- example/
 |   |-- example_dataset.py       # Synthetic dataset builder
@@ -588,9 +577,10 @@ optimus/
     |-- test_probing.py          # Probing, threshold, recovery
     |-- test_resource.py         # Hardware telemetry probing
     |-- test_discovery.py        # Avahi & Nmap discovery
-    |-- test_cache.py            # SQLite registry & FUSE cache
+    |-- test_cache.py            # SQLite registry & pure-Python atomic cache
     |-- test_cache_concurrency.py# Process flock locking
     |-- test_scheduler.py        # Weighted locality scoring
     |-- test_checkpoint.py       # Atomic checkpoint commit/restore
     |-- test_training.py         # Gloo DDP & executor lifecycle
+    |-- test_dashboard.py        # Web dashboard & checkpoint endpoints
 ```
