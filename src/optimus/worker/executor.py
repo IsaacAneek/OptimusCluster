@@ -88,6 +88,17 @@ class TrainingExecutor:
             if req.resume_from_checkpoint and req.resume_checkpoint_path:
                 env["OPTIMUS_RESUME_CHECKPOINT"] = req.resume_checkpoint_path
 
+            if "GLOO_SOCKET_IFNAME" not in env:
+                try:
+                    with open("/proc/net/route", "r") as f:
+                        for line in f.readlines()[1:]:
+                            fields = line.strip().split()
+                            if len(fields) >= 2 and fields[1] == "00000000":
+                                env["GLOO_SOCKET_IFNAME"] = fields[0]
+                                break
+                except Exception:
+                    pass
+
             # Subprocess entrypoint
             entrypoint = req.training_entrypoint or "optimus.training.worker_entry"
             cmd = [sys.executable, "-m", entrypoint]

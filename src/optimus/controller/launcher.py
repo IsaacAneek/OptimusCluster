@@ -6,6 +6,7 @@ Consumes selected_nodes.json and dispatches training jobs to assigned worker ran
 import json
 import logging
 import os
+import socket
 from typing import Dict, List, Optional
 
 from optimus.controller.communication import WorkerClientManager
@@ -44,6 +45,10 @@ class DDPLauncher:
         # By default, Rank 0 serves as the rendezvous master endpoint
         rank_0_node = next((n for n in selected_nodes if n.rank == 0), selected_nodes[0])
         rendezvous_addr = master_addr or rank_0_node.hostname
+        try:
+            rendezvous_addr = socket.gethostbyname(rendezvous_addr)
+        except Exception as e:
+            logger.warning(f"Could not resolve rendezvous master_addr '{rendezvous_addr}': {e}")
         world_size = len(selected_nodes)
 
         logger.info(
