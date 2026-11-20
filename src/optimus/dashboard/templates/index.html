@@ -6,161 +6,298 @@
     <title>Optimus Cluster Dashboard</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
-    <header class="header">
-        <div class="container header-content">
-            <div class="logo">
-                <span class="logo-accent">Optimus</span> Cluster
+<body class="app-body">
+    <!-- Claude.ai UI Shell: Left Sidebar + Main Content -->
+    <div class="app-layout">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="brand">
+                    <span class="brand-badge"></span>
+                    <span class="brand-name">Optimus</span>
+                </div>
+                <div class="brand-sub">Distributed ML Platform</div>
             </div>
-            <div class="header-actions">
-                <button id="btn-refresh" class="btn btn-secondary">Refresh Probes</button>
+
+            <nav class="sidebar-nav">
+                <button class="nav-item active" data-view="view-overview">
+                    <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h3A1.5 1.5 0 0 1 7 2.5v3A1.5 1.5 0 0 1 5.5 7h-3A1.5 1.5 0 0 1 1 5.5v-3zm8 0A1.5 1.5 0 0 1 10.5 1h3A1.5 1.5 0 0 1 15 2.5v3A1.5 1.5 0 0 1 13.5 7h-3A1.5 1.5 0 0 1 9 5.5v-3zm-8 8A1.5 1.5 0 0 1 2.5 9h3A1.5 1.5 0 0 1 7 10.5v3A1.5 1.5 0 0 1 5.5 15h-3A1.5 1.5 0 0 1 1 13.5v-3zm8 0A1.5 1.5 0 0 1 10.5 9h3a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-3A1.5 1.5 0 0 1 9 13.5v-3z"/></svg>
+                    <span>Overview</span>
+                </button>
+                <button class="nav-item" data-view="view-discovery">
+                    <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zm0 2a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zm0 2a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z"/></svg>
+                    <span>LAN Discovery</span>
+                </button>
+                <button class="nav-item" data-view="view-workers">
+                    <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V3zm0 8a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-2z"/></svg>
+                    <span>Workers</span>
+                </button>
+                <button class="nav-item" data-view="view-scheduler">
+                    <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5zM1 4v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4H1z"/></svg>
+                    <span>Scheduler</span>
+                </button>
+                <button class="nav-item" data-view="view-jobs">
+                    <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M4 11a1 1 0 1 1 2 0v1a1 1 0 1 1-2 0v-1zm3-4a1 1 0 1 1 2 0v5a1 1 0 1 1-2 0V7zm3-4a1 1 0 1 1 2 0v9a1 1 0 1 1-2 0V3z"/></svg>
+                    <span>Training Jobs</span>
+                </button>
+                <button class="nav-item" data-view="view-cache">
+                    <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.828c.885-.37 2.154-.769 3.388-.893 1.33-.134 2.458.063 3.112.752v9.746c-.935-.53-2.12-.603-3.213-.493-1.18.12-2.37.461-3.287.811V2.828zm7.5-.141c.654-.689 1.782-.886 3.112-.752 1.234.124 2.503.523 3.388.893v10.746c-.917-.35-2.107-.692-3.287-.81-1.094-.111-2.278-.039-3.213.492V2.687z"/></svg>
+                    <span>Dataset Cache</span>
+                </button>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="footer-card">
+                    <div class="footer-label">Controller</div>
+                    <div id="sidebar-controller" class="footer-value">-</div>
+                    <div class="footer-label mt-1">Subnet</div>
+                    <div id="sidebar-subnet" class="footer-value">-</div>
+                </div>
             </div>
+        </aside>
+
+        <!-- Main Workspace -->
+        <div class="main-wrapper">
+            <!-- Top App Header -->
+            <header class="top-header">
+                <div class="header-left">
+                    <h1 id="page-title" class="page-title">Overview</h1>
+                    <span id="cluster-status-pill" class="pill pill-primary">Cluster Ready</span>
+                </div>
+                <div class="header-right">
+                    <button id="btn-scan-lan" class="btn btn-secondary">Scan LAN Subnet</button>
+                    <button id="btn-refresh" class="btn btn-primary">Refresh Probes</button>
+                </div>
+            </header>
+
+            <!-- Scrollable Content Canvas -->
+            <main class="content-canvas">
+                <!-- VIEW 1: OVERVIEW -->
+                <div id="view-overview" class="tab-view active">
+                    <section class="section">
+                        <div class="section-header">
+                            <h2 class="section-title">Cluster Overview</h2>
+                        </div>
+                        <div class="grid grid-5">
+                            <div class="card card-important">
+                                <div class="card-label">Available Workers</div>
+                                <div id="val-available" class="card-value text-primary">-</div>
+                            </div>
+                            <div class="card">
+                                <div class="card-label">Busy Workers</div>
+                                <div id="val-busy" class="card-value">-</div>
+                            </div>
+                            <div class="card">
+                                <div class="card-label">Unavailable Workers</div>
+                                <div id="val-unavailable" class="card-value">-</div>
+                            </div>
+                            <div class="card card-important">
+                                <div class="card-label">Active Jobs</div>
+                                <div id="val-jobs" class="card-value text-primary">-</div>
+                            </div>
+                            <div class="card">
+                                <div class="card-label">Total Cached Data</div>
+                                <div id="val-cached" class="card-value">-</div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="section">
+                        <div class="section-header">
+                            <h2 class="section-title">Worker Node Telemetry</h2>
+                        </div>
+                        <div class="table-container card">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>Worker ID</th>
+                                        <th>Hostname</th>
+                                        <th>Status</th>
+                                        <th>CPU %</th>
+                                        <th>Available RAM</th>
+                                        <th>Cache Disk</th>
+                                        <th>Temperature</th>
+                                        <th>Jobs</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="overview-workers-body">
+                                    <tr><td colspan="8" class="text-muted">Loading worker nodes...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+
+                <!-- VIEW 2: LAN DISCOVERY (NMAP & AVAHI) -->
+                <div id="view-discovery" class="tab-view">
+                    <section class="section">
+                        <div class="section-header flex-between">
+                            <div>
+                                <h2 class="section-title">LAN Topology Discovery</h2>
+                                <p class="section-desc">Identifies all live hosts, hostnames, and active Optimus worker nodes on the local subnet using Nmap ping sweep and Avahi mDNS resolution.</p>
+                            </div>
+                            <button id="btn-trigger-scan" class="btn btn-primary">Run Subnet Sweep</button>
+                        </div>
+                        <div class="table-container card">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>IP Address</th>
+                                        <th>mDNS Hostname</th>
+                                        <th>Entity Classification</th>
+                                        <th>Optimus Worker</th>
+                                        <th>Worker ID</th>
+                                        <th>Worker Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="discovery-body">
+                                    <tr><td colspan="6" class="text-muted">Loading LAN topology...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+
+                <!-- VIEW 3: WORKERS -->
+                <div id="view-workers" class="tab-view">
+                    <section class="section">
+                        <div class="section-header">
+                            <h2 class="section-title">Configured Cluster Workers</h2>
+                            <p class="section-desc">Live resource and availability metrics collected via controller-initiated passive probing over TCP port 45870.</p>
+                        </div>
+                        <div class="table-container card">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>Worker ID</th>
+                                        <th>Hostname</th>
+                                        <th>Port</th>
+                                        <th>Status</th>
+                                        <th>CPU Load</th>
+                                        <th>RAM (Avail / Total)</th>
+                                        <th>Disk Capacity</th>
+                                        <th>Thermals</th>
+                                        <th>Failures</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="workers-body">
+                                    <tr><td colspan="9" class="text-muted">Loading workers...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+
+                <!-- VIEW 4: SCHEDULER -->
+                <div id="view-scheduler" class="tab-view">
+                    <section class="section">
+                        <div class="section-header">
+                            <h2 class="section-title">Locality-Aware Scheduler</h2>
+                            <p class="section-desc">Executes identical weighted rank selection algorithm across dataset locality, RAM, CPU, and thermals.</p>
+                        </div>
+                        <div class="card card-important mb-3">
+                            <form id="schedule-form" class="schedule-form">
+                                <div class="form-group">
+                                    <label for="sched-dataset">Dataset ID</label>
+                                    <input type="text" id="sched-dataset" name="dataset_id" value="animals" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="sched-version">Version</label>
+                                    <input type="text" id="sched-version" name="dataset_version" value="v1" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="sched-workers">Worker Count</label>
+                                    <input type="number" id="sched-workers" name="workers" value="2" min="1" max="16" required>
+                                </div>
+                                <div class="form-group align-end">
+                                    <button type="submit" id="btn-schedule" class="btn btn-primary">Schedule Ranks</button>
+                                </div>
+                            </form>
+                        </div>
+
+                        <div id="schedule-result" class="schedule-result hidden card">
+                            <h3 class="subsection-title">Scheduled Rank Allocations (<span id="res-job-id"></span>)</h3>
+                            <div class="table-container mt-2">
+                                <table class="table">
+                                    <thead>
+                                        <tr>
+                                            <th>Rank</th>
+                                            <th>Hostname</th>
+                                            <th>Worker ID</th>
+                                            <th>Weighted Score</th>
+                                            <th>Dataset Locality</th>
+                                            <th>Cached Bytes</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="schedule-ranks-body"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+
+                <!-- VIEW 5: TRAINING JOBS -->
+                <div id="view-jobs" class="tab-view">
+                    <section class="section">
+                        <div class="section-header">
+                            <h2 class="section-title">Distributed Training Jobs</h2>
+                            <p class="section-desc">Monitors PyTorch DDP Gloo processes, epoch steps, loss convergence, and fail-stop recovery restarts.</p>
+                        </div>
+                        <div class="table-container card">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>Job ID</th>
+                                        <th>Dataset</th>
+                                        <th>Status</th>
+                                        <th>World Size</th>
+                                        <th>Epoch</th>
+                                        <th>Step</th>
+                                        <th>Loss</th>
+                                        <th>Restarts</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="jobs-body">
+                                    <tr><td colspan="9" class="text-muted">No training jobs recorded</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+
+                <!-- VIEW 6: DATASET CACHE -->
+                <div id="view-cache" class="tab-view">
+                    <section class="section">
+                        <div class="section-header">
+                            <h2 class="section-title">Worker Dataset Cache Inventory</h2>
+                            <p class="section-desc">Per-node local cache inventory, SHA-256 verification metrics, and hit/miss statistics.</p>
+                        </div>
+                        <div class="table-container card">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>Worker Node</th>
+                                        <th>Dataset</th>
+                                        <th>Version</th>
+                                        <th>Cached Files</th>
+                                        <th>Cached Data</th>
+                                        <th>Cache Hits</th>
+                                        <th>Cache Misses</th>
+                                        <th>Downloaded</th>
+                                        <th>Revision</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="cache-body">
+                                    <tr><td colspan="9" class="text-muted">Loading cache summaries...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+            </main>
         </div>
-    </header>
-
-    <main class="container">
-        <!-- Overview Cards -->
-        <section class="section">
-            <h2 class="section-title">Overview</h2>
-            <div class="grid grid-5">
-                <div class="card">
-                    <div class="card-label">Controller Host</div>
-                    <div id="val-controller" class="card-value">-</div>
-                </div>
-                <div class="card">
-                    <div class="card-label">Available Workers</div>
-                    <div id="val-available" class="card-value text-success">-</div>
-                </div>
-                <div class="card">
-                    <div class="card-label">Unavailable Workers</div>
-                    <div id="val-unavailable" class="card-value text-danger">-</div>
-                </div>
-                <div class="card">
-                    <div class="card-label">Active Training Jobs</div>
-                    <div id="val-jobs" class="card-value text-primary">-</div>
-                </div>
-                <div class="card">
-                    <div class="card-label">Total Cached Data</div>
-                    <div id="val-cached" class="card-value">-</div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Workers Table -->
-        <section class="section">
-            <h2 class="section-title">Workers</h2>
-            <div class="table-container">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Worker ID</th>
-                            <th>Hostname</th>
-                            <th>Status</th>
-                            <th>CPU</th>
-                            <th>Available RAM</th>
-                            <th>Cache Disk Avail</th>
-                            <th>Temperature</th>
-                            <th>Active Jobs</th>
-                        </tr>
-                    </thead>
-                    <tbody id="workers-body">
-                        <tr><td colspan="8" class="text-muted">Loading worker nodes...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </section>
-
-        <!-- Scheduler Section -->
-        <section class="section">
-            <h2 class="section-title">Scheduler</h2>
-            <div class="card">
-                <form id="schedule-form" class="schedule-form">
-                    <div class="form-group">
-                        <label for="sched-dataset">Dataset ID</label>
-                        <input type="text" id="sched-dataset" name="dataset_id" value="animals" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="sched-version">Version</label>
-                        <input type="text" id="sched-version" name="dataset_version" value="v1" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="sched-workers">Worker Count</label>
-                        <input type="number" id="sched-workers" name="workers" value="2" min="1" max="16" required>
-                    </div>
-                    <div class="form-group align-end">
-                        <button type="submit" id="btn-schedule" class="btn btn-primary">Schedule Workers</button>
-                    </div>
-                </form>
-
-                <div id="schedule-result" class="schedule-result hidden">
-                    <h3 class="subsection-title">Scheduled Ranks (<span id="res-job-id"></span>)</h3>
-                    <div class="table-container">
-                        <table class="table">
-                            <thead>
-                                <tr>
-                                    <th>Rank</th>
-                                    <th>Hostname</th>
-                                    <th>Locality</th>
-                                    <th>Cached Bytes</th>
-                                    <th>Total Bytes</th>
-                                    <th>Score</th>
-                                </tr>
-                            </thead>
-                            <tbody id="schedule-nodes-body"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Dataset Cache -->
-        <section class="section">
-            <h2 class="section-title">Dataset Cache Observability</h2>
-            <div class="table-container">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Hostname</th>
-                            <th>Dataset</th>
-                            <th>Version</th>
-                            <th>Cached Files</th>
-                            <th>Cached Bytes</th>
-                            <th>Hits</th>
-                            <th>Misses</th>
-                            <th>Revision</th>
-                        </tr>
-                    </thead>
-                    <tbody id="cache-body">
-                        <tr><td colspan="8" class="text-muted">Loading cache summaries...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </section>
-
-        <!-- Active Jobs -->
-        <section class="section">
-            <h2 class="section-title">Training Jobs</h2>
-            <div class="table-container">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Job ID</th>
-                            <th>Dataset</th>
-                            <th>Status</th>
-                            <th>Epoch</th>
-                            <th>Step</th>
-                            <th>Loss</th>
-                            <th>Restarts</th>
-                            <th>Action</th>
-                        </tr>
-                    </thead>
-                    <tbody id="jobs-body">
-                        <tr><td colspan="8" class="text-muted">No active training jobs recorded</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </section>
-    </main>
+    </div>
 
     <script src="/static/main.js"></script>
 </body>

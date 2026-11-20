@@ -1,15 +1,15 @@
 """
 TCP Framing and message serialization for Optimus protocol.
-Uses a 4-byte big-endian length prefix followed by serialized Protocol Buffer bytes.
+Uses a 4-byte big-endian length prefix followed by UTF-8 encoded JSON envelope bytes.
 """
 
 import socket
 import struct
 import time
-import uuid
 from typing import Optional
+import uuid
 
-from optimus.protocol.generated.messages_pb2 import Envelope
+from optimus.protocol.messages import Envelope
 
 DEFAULT_MAX_MESSAGE_SIZE = 4 * 1024 * 1024  # 4 MiB
 HEADER_FORMAT = ">I"
@@ -35,13 +35,14 @@ def create_envelope(
     auth_token: str = "",
 ) -> Envelope:
     """Helper to construct an Envelope with metadata and a single payload."""
-    env = Envelope()
-    env.protocol_version = protocol_version
-    env.message_id = str(uuid.uuid4())
-    env.sender_id = sender_id
-    env.timestamp_ms = int(time.time() * 1000)
-    env.auth_token = auth_token
-    getattr(env, payload_field_name).CopyFrom(payload_obj)
+    env = Envelope(
+        protocol_version=protocol_version,
+        message_id=str(uuid.uuid4()),
+        sender_id=sender_id,
+        timestamp_ms=int(time.time() * 1000),
+        auth_token=auth_token,
+    )
+    env.set_payload(payload_field_name, payload_obj)
     return env
 
 
@@ -94,7 +95,7 @@ def recv_message(
     expected_protocol_version: Optional[int] = CURRENT_PROTOCOL_VERSION,
 ) -> Envelope:
     """
-    Reads a length-prefixed Protocol Buffers Envelope from the socket.
+    Reads a length-prefixed JSON Envelope from the socket.
     Validates message size and protocol version.
     """
     header_bytes = recv_exact(sock, HEADER_SIZE)
@@ -102,19 +103,22 @@ def recv_message(
 
     if length > max_message_size:
         raise MessageTooLargeError(
-            f"Incoming payload length {length} exceeds maximum allowed size {max_message_size}"
+            f"Incoming message size {length} exceeds maximum {max_message_size} bytes"
         )
 
     payload_bytes = recv_exact(sock, length)
-    envelope = Envelope()
-    envelope.ParseFromString(payload_bytes)
+    try:
+        envelope = Envelope.FromString(payload_bytes)
+    except Exception as e:
+        raise ProtocolError(f"Failed to deserialize JSON envelope: {e}")
 
     if (
         expected_protocol_version is not None
         and envelope.protocol_version != expected_protocol_version
     ):
         raise ProtocolError(
-            f"Protocol version mismatch: expected {expected_protocol_version}, got {envelope.protocol_version}"
+            f"Protocol version mismatch: expected {expected_protocol_version}, "
+            f"received {envelope.protocol_version}"
         )
 
     return envelope

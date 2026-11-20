@@ -84,8 +84,11 @@ class ProbeManager:
         with self._lock:
             self._workers.pop(key, None)
 
-    def probe_worker(self, hostname: str, port: int) -> WorkerNodeState:
-        """Sends a single StatusRequest to a worker and updates state."""
+    def probe_worker(self, hostname: str, port: int, probe_only: bool = False) -> WorkerNodeState:
+        """
+        Sends unified probe to a worker and updates availability and resource metrics.
+        Consolidates telemetry into a single TCP roundtrip.
+        """
         key = (hostname, port)
         with self._lock:
             if key not in self._workers:
@@ -95,15 +98,32 @@ class ProbeManager:
             node_state = self._workers[key]
 
         client = self.client_manager.get_client(hostname, port)
-        req = StatusRequest(probe_only=True)
+        req_field = "status_request" if probe_only else "resource_request"
+        req = StatusRequest(probe_only=True) if probe_only else ResourceRequest(detailed=False)
         now = time.time()
         node_state.last_probe_time = now
 
         try:
-            resp_env = client.send_request("status_request", req)
+            resp_env = client.send_request(req_field, req)
             payload_type = resp_env.WhichOneof("payload")
 
-            if payload_type == "status_response":
+            if payload_type == "resource_response":
+                resp: ResourceResponse = resp_env.resource_response
+                with self._lock:
+                    node_state.worker_id = resp.worker_id
+                    node_state.state = resp.status
+                    node_state.active_jobs = resp.active_jobs
+                    node_state.cpu_percent = resp.cpu_percent
+                    node_state.ram_total_mb = resp.ram_total_mb
+                    node_state.ram_available_mb = resp.ram_available_mb
+                    node_state.cache_disk_total_gb = resp.cache_disk_total_gb
+                    node_state.cache_disk_available_gb = resp.cache_disk_available_gb
+                    node_state.temperature_c = resp.temperature_c
+                    node_state.temperature_available = resp.temperature_available
+                    node_state.consecutive_failures = 0
+                    node_state.last_success_time = now
+                    node_state.last_error = None
+            elif payload_type == "status_response":
                 resp: StatusResponse = resp_env.status_response
                 with self._lock:
                     node_state.worker_id = resp.worker_id
@@ -180,7 +200,6 @@ class ProbeManager:
             start_t = time.time()
             try:
                 self.probe_all()
-                self.probe_all_resources()
             except Exception as e:
                 logger.error(f"Error during scheduled probe: {e}")
             elapsed = time.time() - start_t
@@ -194,75 +213,12 @@ class ProbeManager:
         logger.info("Controller probing loop stopped")
 
     def probe_worker_resources(self, hostname: str, port: int) -> WorkerNodeState:
-        """Sends a ResourceRequest to a worker and updates resource metrics."""
-        key = (hostname, port)
-        with self._lock:
-            if key not in self._workers:
-                self._workers[key] = WorkerNodeState(hostname=hostname, port=port)
-            node_state = self._workers[key]
-
-        client = self.client_manager.get_client(hostname, port)
-        req = ResourceRequest(detailed=False)
-        now = time.time()
-        node_state.last_probe_time = now
-
-        try:
-            resp_env = client.send_request("resource_request", req)
-            payload_type = resp_env.WhichOneof("payload")
-
-            if payload_type == "resource_response":
-                resp: ResourceResponse = resp_env.resource_response
-                with self._lock:
-                    node_state.worker_id = resp.worker_id
-                    node_state.state = resp.status
-                    node_state.active_jobs = resp.active_jobs
-                    node_state.cpu_percent = resp.cpu_percent
-                    node_state.ram_total_mb = resp.ram_total_mb
-                    node_state.ram_available_mb = resp.ram_available_mb
-                    node_state.cache_disk_total_gb = resp.cache_disk_total_gb
-                    node_state.cache_disk_available_gb = resp.cache_disk_available_gb
-                    node_state.temperature_c = resp.temperature_c
-                    node_state.temperature_available = resp.temperature_available
-                    node_state.consecutive_failures = 0
-                    node_state.last_success_time = now
-                    node_state.last_error = None
-            elif payload_type == "error_response":
-                err = resp_env.error_response
-                raise WorkerCommunicationError(f"Worker returned error: {err.error_message}")
-            else:
-                raise WorkerCommunicationError(f"Unexpected response payload: {payload_type}")
-
-        except Exception as ex:
-            with self._lock:
-                node_state.consecutive_failures += 1
-                node_state.last_error = str(ex)
-                if node_state.consecutive_failures >= self.failure_threshold:
-                    node_state.state = WorkerState.UNAVAILABLE
-
-        return node_state
+        """Unified probe returning node status and resources."""
+        return self.probe_worker(hostname, port, probe_only=False)
 
     def probe_all_resources(self) -> Dict[Tuple[str, int], WorkerNodeState]:
-        """Probes resources for all registered workers in parallel."""
-        with self._lock:
-            targets = list(self._workers.keys())
-
-        if not targets:
-            return {}
-
-        results = {}
-        with ThreadPoolExecutor(max_workers=min(32, len(targets))) as executor:
-            future_to_worker = {
-                executor.submit(self.probe_worker_resources, host, port): (host, port)
-                for host, port in targets
-            }
-            for future in future_to_worker:
-                key = future_to_worker[future]
-                try:
-                    results[key] = future.result()
-                except Exception as ex:
-                    logger.error(f"Error probing resources for {key}: {ex}")
-
-        return results
+        """Unified probe across all workers."""
+        return self.probe_all()
 
     def format_worker_table(self) -> str:
         """Generates a text table of current worker status and resource metrics."""

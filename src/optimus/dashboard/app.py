@@ -1,9 +1,11 @@
 """
 Optimus Controller Web Dashboard.
-FastAPI web application providing cluster observability and unified scheduling.
+FastAPI web application providing cluster observability, LAN topology discovery,
+and unified scheduling.
 Hosted on the controller node only.
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 import logging
 import os
@@ -15,7 +17,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from optimus.cluster import OptimusConfig
-from optimus.protocol.generated.messages_pb2 import JobState, WorkerState
+from optimus.protocol.messages import JobState, WorkerState
 from optimus.sdk import Optimus
 
 logger = logging.getLogger("optimus.dashboard")
@@ -100,6 +102,7 @@ async def get_overview():
         "unavailable_workers": unavail,
         "active_jobs": active_jobs,
         "total_cached_bytes": total_cached_bytes,
+        "subnet": cluster.config.discovery.subnet or "192.168.10.0/24",
     }
 
 
@@ -129,8 +132,28 @@ async def get_workers():
 @app.post("/api/probe")
 async def trigger_probe():
     cluster = get_cluster()
-    cluster.probe_manager.probe_all_resources()
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, cluster.probe_manager.probe_all)
     return {"status": "ok", "message": "Probes completed"}
+
+
+@app.get("/api/discovery")
+async def get_discovery():
+    cluster = get_cluster()
+    cached = cluster.discovery_manager.get_cached_lan_hosts()
+    if not cached:
+        # If cache empty, run quick scan in executor
+        loop = asyncio.get_event_loop()
+        cached = await loop.run_in_executor(None, cluster.discovery_manager.scan_lan_topology)
+    return [h.to_dict() for h in cached]
+
+
+@app.post("/api/discovery/scan")
+async def scan_lan():
+    cluster = get_cluster()
+    loop = asyncio.get_event_loop()
+    hosts = await loop.run_in_executor(None, cluster.discovery_manager.scan_lan_topology)
+    return [h.to_dict() for h in hosts]
 
 
 @app.get("/api/cache")

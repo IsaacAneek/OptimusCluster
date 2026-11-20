@@ -4,17 +4,17 @@ Integrates Avahi for mDNS hostname resolution, Nmap for subnet scanning,
 and protocol verification over TCP.
 """
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import logging
 import re
 import shutil
 import socket
 import subprocess
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from optimus.cluster import OptimusConfig
 from optimus.controller.communication import WorkerClient, WorkerCommunicationError
-from optimus.protocol.generated.messages_pb2 import (
+from optimus.protocol.messages import (
     StatusRequest,
     StatusResponse,
     WorkerState,
@@ -34,20 +34,37 @@ class DiscoveredNode:
     uptime_seconds: int
 
 
+@dataclass
+class LanHostInfo:
+    ip: str
+    hostname: str
+    is_optimus_worker: bool
+    worker_id: Optional[str] = None
+    status: Optional[str] = None
+    port: Optional[int] = None
+    is_controller: bool = False
+    is_gateway: bool = False
+    active_jobs: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
 class NodeDiscoveryManager:
-    """Manages discovery and resolution of cluster worker nodes."""
+    """Manages discovery and resolution of cluster worker nodes and LAN topology."""
 
     def __init__(self, config: OptimusConfig):
         self.config = config
         self.avahi_cmd = shutil.which("avahi-resolve-host-name") or shutil.which("avahi-resolve")
+        self.avahi_addr_cmd = shutil.which("avahi-resolve-address") or shutil.which("avahi-resolve")
         self.nmap_cmd = shutil.which("nmap")
+        self._cached_lan_hosts: List[LanHostInfo] = []
 
     def resolve_mdns(self, hostname: str, timeout: float = 1.5) -> Optional[str]:
         """
         Resolves an mDNS hostname (e.g. 'pi02.local') using Avahi with fallback
         to standard system getaddrinfo resolver.
         """
-        # 1. Try Avahi CLI if installed
         if self.avahi_cmd:
             try:
                 cmd = [self.avahi_cmd]
@@ -63,7 +80,6 @@ class NodeDiscoveryManager:
                     timeout=timeout,
                 )
                 if result.returncode == 0 and result.stdout:
-                    # Output format: <hostname>\t<ip>
                     parts = result.stdout.strip().split()
                     if len(parts) >= 2:
                         ip = parts[1]
@@ -72,7 +88,6 @@ class NodeDiscoveryManager:
             except Exception as e:
                 logger.debug(f"Avahi resolution failed for {hostname}: {e}")
 
-        # 2. Fallback to standard resolver (nss-mdns)
         try:
             addr_info = socket.getaddrinfo(
                 hostname, None, socket.AF_INET, socket.SOCK_STREAM
@@ -85,6 +100,30 @@ class NodeDiscoveryManager:
             logger.debug(f"System DNS resolution failed for {hostname}: {e}")
 
         return None
+
+    def resolve_ip_to_hostname(self, ip: str, timeout: float = 1.5) -> str:
+        """Resolves an IP to mDNS or DNS hostname using Avahi / socket."""
+        if self.avahi_addr_cmd:
+            try:
+                cmd = [self.avahi_addr_cmd]
+                if "avahi-resolve" in self.avahi_addr_cmd and "-address" not in self.avahi_addr_cmd:
+                    cmd.extend(["-a", ip])
+                else:
+                    cmd.append(ip)
+
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+                if result.returncode == 0 and result.stdout:
+                    parts = result.stdout.strip().split()
+                    if len(parts) >= 2:
+                        return parts[1]
+            except Exception:
+                pass
+
+        try:
+            host, _, _ = socket.gethostbyaddr(ip)
+            return host
+        except Exception:
+            return ip
 
     def scan_subnet(self, subnet: str, timeout: float = 15.0) -> List[str]:
         """
@@ -121,9 +160,7 @@ class NodeDiscoveryManager:
         port: int,
         timeout: float = 2.0,
     ) -> Optional[StatusResponse]:
-        """
-        Connects to the endpoint over TCP and verifies it responds to the Optimus protocol.
-        """
+        """Connects to endpoint over TCP and verifies Optimus worker protocol."""
         client = WorkerClient(
             hostname=ip_or_host,
             port=port,
@@ -144,16 +181,70 @@ class NodeDiscoveryManager:
         finally:
             client.close()
 
+    def scan_lan_topology(self, subnet: Optional[str] = None) -> List[LanHostInfo]:
+        """
+        Discovers all live hosts on the LAN via Nmap, resolves hostnames via Avahi,
+        and identifies Optimus workers vs other network entities.
+        """
+        target_subnet = subnet or self.config.discovery.subnet or "192.168.10.0/24"
+        live_ips = self.scan_subnet(target_subnet)
+        default_port = self.config.controller.tcp_port or 45870
+
+        # Local controller IP
+        try:
+            controller_ip = socket.gethostbyname(socket.gethostname())
+        except Exception:
+            controller_ip = "127.0.0.1"
+
+        hosts: List[LanHostInfo] = []
+
+        for ip in live_ips:
+            hostname = self.resolve_ip_to_hostname(ip)
+            is_gw = ip.endswith(".1")
+            is_ctrl = (ip == controller_ip) or (hostname == self.config.controller.hostname)
+
+            # Test if it's an Optimus worker
+            worker_status = None
+            if not is_gw:
+                worker_status = self.verify_worker(ip, default_port, timeout=1.0)
+                if not worker_status and hostname != ip:
+                    worker_status = self.verify_worker(hostname, default_port, timeout=1.0)
+
+            if worker_status:
+                hosts.append(
+                    LanHostInfo(
+                        ip=ip,
+                        hostname=hostname,
+                        is_optimus_worker=True,
+                        worker_id=worker_status.worker_id,
+                        status=WorkerState.Name(worker_status.status),
+                        port=default_port,
+                        is_controller=is_ctrl,
+                        is_gateway=is_gw,
+                        active_jobs=worker_status.active_job_count,
+                    )
+                )
+            else:
+                hosts.append(
+                    LanHostInfo(
+                        ip=ip,
+                        hostname=hostname,
+                        is_optimus_worker=False,
+                        is_controller=is_ctrl,
+                        is_gateway=is_gw,
+                    )
+                )
+
+        self._cached_lan_hosts = hosts
+        return hosts
+
+    def get_cached_lan_hosts(self) -> List[LanHostInfo]:
+        return self._cached_lan_hosts
+
     def discover(self) -> List[DiscoveredNode]:
-        """
-        Executes full discovery workflow:
-        1. Resolves configured worker hostnames via Avahi/mDNS.
-        2. Optionally scans subnet.
-        3. Verifies each candidate via TCP Optimus protocol.
-        """
+        """Executes worker discovery for configured hosts."""
         discovered: List[DiscoveredNode] = []
 
-        # Step 1: Configured hostnames
         for worker_cfg in self.config.workers:
             if not worker_cfg.enabled:
                 continue
@@ -163,7 +254,6 @@ class NodeDiscoveryManager:
             ip = self.resolve_mdns(hostname)
             target = ip if ip else hostname
 
-            # Verify node actually speaks Optimus protocol
             status = self.verify_worker(target, port)
             if status:
                 discovered.append(

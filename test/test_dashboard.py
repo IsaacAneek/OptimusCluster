@@ -1,6 +1,6 @@
 """
 Tests for Optimus Web Dashboard.
-Verifies HTML template rendering, static mounts, and REST API endpoints.
+Verifies HTML template rendering, static mounts, and REST API endpoints including LAN discovery.
 """
 
 from fastapi.testclient import TestClient
@@ -21,6 +21,7 @@ def test_dashboard_index_html(client):
     assert "text/html" in response.headers["content-type"]
     assert "Optimus" in response.text
     assert "Overview" in response.text
+    assert "LAN Discovery" in response.text
 
 
 def test_dashboard_api_overview(client):
@@ -39,6 +40,14 @@ def test_dashboard_api_workers(client):
     assert response.status_code == 200
     workers = response.json()
     assert isinstance(workers, list)
+
+
+def test_dashboard_api_discovery(client):
+    """Verifies the /api/discovery endpoint returns discovered LAN host array."""
+    response = client.get("/api/discovery")
+    assert response.status_code == 200
+    hosts = response.json()
+    assert isinstance(hosts, list)
 
 
 def test_dashboard_api_jobs(client):

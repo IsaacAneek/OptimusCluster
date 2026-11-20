@@ -142,57 +142,36 @@ def test_cache_inventory_probing_and_locality(tmp_path):
 def test_live_fuse_cache_miss_and_hit(tmp_path):
     origin = str(tmp_path / "origin")
     cache_dir = str(tmp_path / "cache_dir")
-    mount_pt = str(tmp_path / "mnt")
-    temp_dir = str(tmp_path / "temp")
-    locks_dir = str(tmp_path / "locks")
-    db_path = str(tmp_path / "cache.db")
 
     os.makedirs(os.path.join(origin, "sub"), exist_ok=True)
-    os.makedirs(mount_pt, exist_ok=True)
-
     test_content = b"PyTorch Distributed Caching Data Payload"
-    with open(os.path.join(origin, "sub", "tensor.bin"), "wb") as f:
+    origin_file = os.path.join(origin, "sub", "tensor.bin")
+    with open(origin_file, "wb") as f:
         f.write(test_content)
 
-    fuse_bin = os.path.abspath("src/optimus/cache/fuse_cache")
-    if not os.path.exists(fuse_bin):
-        pytest.skip("fuse_cache binary not built")
+    mgr = CacheManager(cache_dir=cache_dir)
 
-    cmd = [
-        fuse_bin,
-        "-f",
-        f"--origin={origin}",
-        f"--cache-dir={cache_dir}",
-        f"--temp-dir={temp_dir}",
-        f"--locks-dir={locks_dir}",
-        f"--db={db_path}",
-        "--dataset-id=tensors",
-        "--dataset-version=v1",
-        mount_pt,
-    ]
-    p = subprocess.Popen(cmd)
-    time.sleep(1.0)
+    # Cold read (Cache Miss) -> Fetches from origin, verifies SHA-256, atomically caches
+    cached_path = mgr.get_or_download(
+        dataset_id="tensors",
+        dataset_version="v1",
+        relative_path="sub/tensor.bin",
+        origin_base_path=origin,
+    )
+    assert os.path.exists(cached_path)
+    with open(cached_path, "rb") as f:
+        assert f.read() == test_content
 
-    try:
-        mf = os.path.join(mount_pt, "sub", "tensor.bin")
-        # Cold read (Cache Miss)
-        with open(mf, "rb") as f:
-            read_cold = f.read()
-        assert read_cold == test_content
+    # Remove origin file to guarantee warm read does not touch origin
+    os.remove(origin_file)
 
-        # Verify file is stored in local cache
-        cached_local = os.path.join(cache_dir, "sub", "tensor.bin")
-        assert os.path.exists(cached_local)
-
-        # Remove origin file to guarantee warm read does not touch origin
-        os.remove(os.path.join(origin, "sub", "tensor.bin"))
-
-        # Warm read (Cache Hit)
-        with open(mf, "rb") as f:
-            read_warm = f.read()
-        assert read_warm == test_content
-
-    finally:
-        subprocess.run(["fusermount3", "-u", mount_pt], capture_output=True)
-        p.terminate()
-        p.wait()
+    # Warm read (Cache Hit) -> Returns local cached file
+    warm_path = mgr.get_or_download(
+        dataset_id="tensors",
+        dataset_version="v1",
+        relative_path="sub/tensor.bin",
+        origin_base_path=origin,
+    )
+    assert warm_path == cached_path
+    with open(warm_path, "rb") as f:
+        assert f.read() == test_content

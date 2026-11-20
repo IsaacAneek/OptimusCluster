@@ -1,6 +1,12 @@
-from optimus.protocol.generated.messages_pb2 import (
+"""
+Optimus Protocol Package.
+Provides message models and length-prefixed framing.
+"""
+
+from optimus.protocol.messages import (
     WorkerState,
     JobState,
+    ThermalZone,
     StatusRequest,
     StatusResponse,
     ResourceRequest,
@@ -33,6 +39,7 @@ from optimus.protocol.framing import (
 __all__ = [
     "WorkerState",
     "JobState",
+    "ThermalZone",
     "StatusRequest",
     "StatusResponse",
     "ResourceRequest",
