@@ -4,12 +4,14 @@ Listens for controller requests, validates authentication, and dispatches respon
 Workers NEVER push heartbeats to the controller; they only respond when queried.
 """
 
+import json
 import logging
 import os
+import shutil
 import socket
 import threading
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 from optimus.cache.manager import CacheManager
 from optimus.protocol.framing import (
@@ -25,6 +27,9 @@ from optimus.protocol.generated.messages_pb2 import (
     CacheInventoryResponse,
     CacheSummaryRequest,
     CacheSummaryResponse,
+    CheckpointEntry,
+    CheckpointListRequest,
+    CheckpointListResponse,
     Envelope,
     ErrorResponse,
     JobResponse,
@@ -108,6 +113,128 @@ class WorkerServer:
         self._handlers["job_status_request"] = self._handle_job_status_request
         self._handlers["job_stop"] = self._handle_job_stop
         self._handlers["shutdown_request"] = self._handle_shutdown_request
+        self._handlers["checkpoint_list_request"] = self._handle_checkpoint_list_request
+
+    def _handle_checkpoint_list_request(self, envelope: Envelope) -> Envelope:
+        req: CheckpointListRequest = envelope.checkpoint_list_request
+        target_dir = req.checkpoint_dir if req and req.checkpoint_dir else "/srv/checkpoints"
+        job_filter = req.job_id if req and req.job_id else ""
+        resp = self._scan_checkpoints(target_dir, job_filter)
+        return create_envelope("checkpoint_list_response", resp, self.worker_id)
+
+    def _scan_checkpoints(self, target_dir: str, job_filter: str = "") -> CheckpointListResponse:
+        target_dir = os.path.abspath(target_dir)
+        if not os.path.isdir(target_dir):
+            return CheckpointListResponse(
+                worker_id=self.worker_id,
+                hostname=self.hostname,
+                checkpoint_dir=target_dir,
+                accessible=False,
+                error_message=f"Directory '{target_dir}' does not exist on this node",
+            )
+
+        disk_avail = 0
+        try:
+            usage = shutil.disk_usage(target_dir)
+            disk_avail = usage.free
+        except Exception:
+            pass
+
+        checkpoints: List[CheckpointEntry] = []
+        try:
+            for job_name in os.listdir(target_dir):
+                if job_filter and job_name != job_filter:
+                    continue
+                job_path = os.path.join(target_dir, job_name)
+                if not os.path.isdir(job_path):
+                    continue
+
+                latest_target = ""
+                latest_file = os.path.join(job_path, "latest.json")
+                if os.path.isfile(latest_file):
+                    try:
+                        with open(latest_file, "r") as f:
+                            ldata = json.load(f)
+                        latest_target = os.path.basename(ldata.get("latest_checkpoint", ""))
+                    except Exception:
+                        pass
+
+                for item in os.listdir(job_path):
+                    if item.startswith("checkpoint-") and not item.endswith(".tmp"):
+                        ckpt_dir = os.path.join(job_path, item)
+                        if not os.path.isdir(ckpt_dir):
+                            continue
+
+                        meta_dict = {}
+                        meta_path = os.path.join(ckpt_dir, "metadata.json")
+                        if os.path.isfile(meta_path):
+                            try:
+                                with open(meta_path, "r") as f:
+                                    meta_dict = json.load(f)
+                            except Exception:
+                                pass
+
+                        files = []
+                        total_bytes = 0
+                        model_bytes = 0
+                        mtime = 0.0
+                        try:
+                            for fname in os.listdir(ckpt_dir):
+                                fpath = os.path.join(ckpt_dir, fname)
+                                if os.path.isfile(fpath):
+                                    files.append(fname)
+                                    fsize = os.path.getsize(fpath)
+                                    total_bytes += fsize
+                                    if fname == "model.pt":
+                                        model_bytes = fsize
+                                    fmtime = os.path.getmtime(fpath)
+                                    if fmtime > mtime:
+                                        mtime = fmtime
+                        except Exception:
+                            pass
+
+                        epoch = meta_dict.get("epoch", 0)
+                        if "epoch" not in meta_dict and item.startswith("checkpoint-"):
+                            try:
+                                epoch = int(item.split("-")[1])
+                            except Exception:
+                                pass
+
+                        entry = CheckpointEntry(
+                            job_id=job_name,
+                            checkpoint_name=item,
+                            epoch=epoch,
+                            global_step=meta_dict.get("global_step", 0),
+                            loss=float(meta_dict.get("loss", 0.0)),
+                            dataset_id=meta_dict.get("dataset_id", ""),
+                            dataset_version=meta_dict.get("dataset_version", ""),
+                            world_size=int(meta_dict.get("world_size", 1)),
+                            model_size_bytes=model_bytes,
+                            total_size_bytes=total_bytes,
+                            is_latest=(item == latest_target),
+                            saved_files=files,
+                            mtime=mtime,
+                            path=ckpt_dir,
+                        )
+                        checkpoints.append(entry)
+
+            checkpoints.sort(key=lambda c: (c.job_id, c.epoch), reverse=True)
+            return CheckpointListResponse(
+                worker_id=self.worker_id,
+                hostname=self.hostname,
+                checkpoint_dir=target_dir,
+                accessible=True,
+                disk_available_bytes=disk_avail,
+                checkpoints=checkpoints,
+            )
+        except Exception as e:
+            return CheckpointListResponse(
+                worker_id=self.worker_id,
+                hostname=self.hostname,
+                checkpoint_dir=target_dir,
+                accessible=False,
+                error_message=str(e),
+            )
 
     def _handle_job_submit(self, envelope: Envelope) -> Envelope:
         req: JobSubmit = envelope.job_submit

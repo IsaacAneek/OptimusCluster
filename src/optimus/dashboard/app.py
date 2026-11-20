@@ -7,8 +7,11 @@ Hosted on the controller node only.
 
 import asyncio
 from contextlib import asynccontextmanager
+import datetime
+import json
 import logging
 import os
+import shutil
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -17,7 +20,13 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from optimus.cluster import OptimusConfig
-from optimus.protocol.messages import JobState, WorkerState
+from optimus.protocol.messages import (
+    CheckpointEntry,
+    CheckpointListRequest,
+    CheckpointListResponse,
+    JobState,
+    WorkerState,
+)
 from optimus.sdk import Optimus
 
 logger = logging.getLogger("optimus.dashboard")
@@ -94,6 +103,19 @@ async def get_overview():
             except Exception:
                 pass
 
+    checkpoint_dir = cluster.config.training.checkpoint_directory or "/srv/checkpoints"
+    total_checkpoints = 0
+    if os.path.isdir(checkpoint_dir):
+        try:
+            for j in os.listdir(checkpoint_dir):
+                jpath = os.path.join(checkpoint_dir, j)
+                if os.path.isdir(jpath):
+                    total_checkpoints += sum(
+                        1 for c in os.listdir(jpath) if c.startswith("checkpoint-") and not c.endswith(".tmp")
+                    )
+        except Exception:
+            pass
+
     return {
         "controller_hostname": cluster.config.controller.hostname,
         "total_workers": len(states),
@@ -102,6 +124,7 @@ async def get_overview():
         "unavailable_workers": unavail,
         "active_jobs": active_jobs,
         "total_cached_bytes": total_cached_bytes,
+        "total_checkpoints": total_checkpoints,
         "subnet": cluster.config.discovery.subnet or "192.168.10.0/24",
     }
 
@@ -230,3 +253,232 @@ async def stop_job(job_id: str):
     cluster.job_manager._stop_ddp_group(job)
     job.status = JobState.JOB_STOPPED
     return {"status": "ok", "message": f"Job {job_id} stopped"}
+
+
+def _scan_local_checkpoints(base_dir: str, runs_dir: str) -> List[Dict[str, Any]]:
+    base_dir = os.path.abspath(base_dir)
+    runs_dir = os.path.abspath(runs_dir)
+    results = []
+    if not os.path.isdir(base_dir):
+        return results
+
+    for job_name in os.listdir(base_dir):
+        job_path = os.path.join(base_dir, job_name)
+        if not os.path.isdir(job_path):
+            continue
+
+        latest_target = ""
+        latest_file = os.path.join(job_path, "latest.json")
+        if os.path.isfile(latest_file):
+            try:
+                with open(latest_file, "r") as f:
+                    ldata = json.load(f)
+                latest_target = os.path.basename(ldata.get("latest_checkpoint", ""))
+            except Exception:
+                pass
+
+        saved_by_node = "Unknown"
+        participating_nodes = []
+        sched_file = os.path.join(runs_dir, job_name, "selected_nodes.json")
+        if os.path.isfile(sched_file):
+            try:
+                with open(sched_file, "r") as f:
+                    sdata = json.load(f)
+                nodes = sdata.get("selected_nodes", [])
+                for n in nodes:
+                    participating_nodes.append(n.get("hostname", ""))
+                    if n.get("rank") == 0:
+                        saved_by_node = f"{n.get('hostname')} ({n.get('worker_id', 'Rank 0')})"
+            except Exception:
+                pass
+
+        for item in os.listdir(job_path):
+            if item.startswith("checkpoint-") and not item.endswith(".tmp"):
+                ckpt_dir = os.path.join(job_path, item)
+                if not os.path.isdir(ckpt_dir):
+                    continue
+
+                meta_dict = {}
+                meta_path = os.path.join(ckpt_dir, "metadata.json")
+                if os.path.isfile(meta_path):
+                    try:
+                        with open(meta_path, "r") as f:
+                            meta_dict = json.load(f)
+                    except Exception:
+                        pass
+
+                files = []
+                total_bytes = 0
+                model_bytes = 0
+                mtime = 0.0
+                try:
+                    for fname in os.listdir(ckpt_dir):
+                        fpath = os.path.join(ckpt_dir, fname)
+                        if os.path.isfile(fpath):
+                            files.append(fname)
+                            sz = os.path.getsize(fpath)
+                            total_bytes += sz
+                            if fname == "model.pt":
+                                model_bytes = sz
+                            mt = os.path.getmtime(fpath)
+                            if mt > mtime:
+                                mtime = mt
+                except Exception:
+                    pass
+
+                epoch = meta_dict.get("epoch", 0)
+                if "epoch" not in meta_dict and item.startswith("checkpoint-"):
+                    try:
+                        epoch = int(item.split("-")[1])
+                    except Exception:
+                        pass
+
+                created_str = (
+                    datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+                    if mtime > 0
+                    else "-"
+                )
+
+                results.append({
+                    "job_id": job_name,
+                    "checkpoint_name": item,
+                    "epoch": epoch,
+                    "global_step": meta_dict.get("global_step", 0),
+                    "loss": round(float(meta_dict.get("loss", 0.0)), 4),
+                    "dataset_id": meta_dict.get("dataset_id", "default"),
+                    "dataset_version": meta_dict.get("dataset_version", "v1"),
+                    "world_size": meta_dict.get("world_size", 1),
+                    "model_size_mb": round(model_bytes / (1024 * 1024), 2),
+                    "total_size_mb": round(total_bytes / (1024 * 1024), 2),
+                    "is_latest": (item == latest_target),
+                    "saved_by_node": saved_by_node,
+                    "participating_nodes": participating_nodes,
+                    "saved_files": files,
+                    "mtime": mtime,
+                    "created_at": created_str,
+                    "path": ckpt_dir,
+                    "verified_nodes": [],
+                })
+
+    results.sort(key=lambda x: (x["job_id"], x["epoch"]), reverse=True)
+    return results
+
+
+async def collect_checkpoints_data(cluster: Optimus) -> Dict[str, Any]:
+    base_dir = cluster.config.training.checkpoint_directory or "/srv/checkpoints"
+    runs_dir = cluster.config.scheduler.output_directory or "./runs"
+    loop = asyncio.get_event_loop()
+
+    # 1. Local controller scan
+    controller_ckpts = await loop.run_in_executor(
+        None, _scan_local_checkpoints, base_dir, runs_dir
+    )
+
+    nodes_data = []
+    controller_host = cluster.config.controller.hostname or "isaac.local"
+
+    controller_avail_gb = 0
+    try:
+        controller_avail_gb = int(shutil.disk_usage(base_dir).free / (1024 * 1024 * 1024))
+    except Exception:
+        pass
+
+    nodes_data.append({
+        "hostname": controller_host,
+        "worker_id": "controller",
+        "role": "Controller",
+        "status": "ONLINE",
+        "accessible": os.path.isdir(base_dir),
+        "checkpoint_dir": base_dir,
+        "disk_available_gb": controller_avail_gb,
+        "checkpoints_count": len(controller_ckpts),
+    })
+
+    worker_ckpts_by_node: Dict[str, List[Any]] = {}
+
+    for w_cfg in cluster.config.workers:
+        if not w_cfg.enabled:
+            continue
+        hostname = w_cfg.hostname
+        port = getattr(w_cfg, "port", 45870)
+
+        node_info = {
+            "hostname": hostname,
+            "worker_id": f"worker-{hostname.split('.')[0]}",
+            "role": "Worker",
+            "status": "UNAVAILABLE",
+            "accessible": False,
+            "checkpoint_dir": base_dir,
+            "disk_available_gb": 0,
+            "checkpoints_count": 0,
+        }
+
+        try:
+            client = cluster.client_manager.get_client(hostname, port)
+            req = CheckpointListRequest(checkpoint_dir=base_dir)
+
+            resp_env = await loop.run_in_executor(
+                None, client.send_request, "checkpoint_list_request", req, 2.5
+            )
+
+            if resp_env:
+                payload_name = resp_env.WhichOneof("payload")
+                c_resp = getattr(resp_env, "checkpoint_list_response", None)
+                if c_resp:
+                    node_info["status"] = "AVAILABLE" if c_resp.accessible else "ERROR"
+                    node_info["accessible"] = c_resp.accessible
+                    node_info["worker_id"] = c_resp.worker_id or node_info["worker_id"]
+                    node_info["disk_available_gb"] = int(
+                        c_resp.disk_available_bytes / (1024 * 1024 * 1024)
+                    )
+                    node_info["checkpoints_count"] = len(c_resp.checkpoints)
+                    worker_ckpts_by_node[hostname] = c_resp.checkpoints
+        except Exception as e:
+            node_info["error_message"] = str(e)
+
+        nodes_data.append(node_info)
+
+    # Correlate verified_nodes for each checkpoint
+    for ckpt in controller_ckpts:
+        verified = [controller_host]
+        for w_host, w_list in worker_ckpts_by_node.items():
+            if any(c.job_id == ckpt["job_id"] and c.checkpoint_name == ckpt["checkpoint_name"] for c in w_list):
+                verified.append(w_host)
+        ckpt["verified_nodes"] = verified
+
+    total_size_mb = sum(c["total_size_mb"] for c in controller_ckpts)
+
+    summary = {
+        "total_checkpoints": len(controller_ckpts),
+        "total_size_mb": round(total_size_mb, 2),
+        "nodes_count": len(nodes_data),
+        "nodes_accessible_count": sum(1 for n in nodes_data if n["accessible"]),
+        "latest_job": controller_ckpts[0]["job_id"] if controller_ckpts else "-",
+        "latest_checkpoint": controller_ckpts[0]["checkpoint_name"] if controller_ckpts else "-",
+    }
+
+    return {
+        "summary": summary,
+        "nodes": nodes_data,
+        "checkpoints": controller_ckpts,
+    }
+
+
+@app.get("/api/checkpoints")
+async def get_checkpoints():
+    cluster = get_cluster()
+    return await collect_checkpoints_data(cluster)
+
+
+@app.get("/api/checkpoints/{job_id}/{checkpoint_name}/metadata")
+async def get_checkpoint_metadata(job_id: str, checkpoint_name: str):
+    cluster = get_cluster()
+    base_dir = cluster.config.training.checkpoint_directory or "/srv/checkpoints"
+    meta_path = os.path.join(base_dir, job_id, checkpoint_name, "metadata.json")
+    if not os.path.isfile(meta_path):
+        raise HTTPException(status_code=404, detail="Checkpoint metadata not found")
+    try:
+        with open(meta_path, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

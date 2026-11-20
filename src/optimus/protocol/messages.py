@@ -252,6 +252,51 @@ class ErrorResponse(BaseMessage):
     error_message: str = ""
 
 
+@dataclass
+class CheckpointEntry(BaseMessage):
+    job_id: str = ""
+    checkpoint_name: str = ""
+    epoch: int = 0
+    global_step: int = 0
+    loss: float = 0.0
+    dataset_id: str = ""
+    dataset_version: str = ""
+    world_size: int = 1
+    model_size_bytes: int = 0
+    total_size_bytes: int = 0
+    is_latest: bool = False
+    saved_files: List[str] = field(default_factory=list)
+    mtime: float = 0.0
+    path: str = ""
+
+
+@dataclass
+class CheckpointListRequest(BaseMessage):
+    checkpoint_dir: str = ""
+    job_id: str = ""
+
+
+@dataclass
+class CheckpointListResponse(BaseMessage):
+    worker_id: str = ""
+    hostname: str = ""
+    checkpoint_dir: str = ""
+    accessible: bool = True
+    disk_available_bytes: int = 0
+    checkpoints: List[CheckpointEntry] = field(default_factory=list)
+    error_message: str = ""
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]):
+        ckpts_data = data.pop("checkpoints", [])
+        checkpoints = [
+            CheckpointEntry(**c) if isinstance(c, dict) else c for c in ckpts_data
+        ]
+        valid_keys = cls.__dataclass_fields__.keys()
+        filtered = {k: v for k, v in data.items() if k in valid_keys and k != "checkpoints"}
+        return cls(checkpoints=checkpoints, **filtered)
+
+
 _PAYLOAD_MAP = {
     "status_request": StatusRequest,
     "status_response": StatusResponse,
@@ -268,6 +313,8 @@ _PAYLOAD_MAP = {
     "job_stop": JobStop,
     "shutdown_request": ShutdownRequest,
     "error_response": ErrorResponse,
+    "checkpoint_list_request": CheckpointListRequest,
+    "checkpoint_list_response": CheckpointListResponse,
 }
 
 

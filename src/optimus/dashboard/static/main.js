@@ -17,6 +17,7 @@ document.addEventListener("DOMContentLoaded", () => {
         "view-scheduler": "Locality Scheduler",
         "view-jobs": "Distributed Training Jobs",
         "view-cache": "Dataset Cache",
+        "view-checkpoints": "Saved Node Checkpoints",
     };
 
     navItems.forEach(item => {
@@ -41,6 +42,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 fetchJobs();
             } else if (targetView === "view-cache") {
                 fetchCache();
+            } else if (targetView === "view-checkpoints") {
+                fetchCheckpoints();
             }
         });
     });
@@ -59,6 +62,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const mb = (data.total_cached_bytes / (1024 * 1024)).toFixed(1);
             document.getElementById("val-cached").textContent = `${mb} MB`;
+
+            const ckptVal = document.getElementById("val-checkpoints");
+            if (ckptVal && data.total_checkpoints !== undefined) {
+                ckptVal.textContent = data.total_checkpoints;
+            }
 
             document.getElementById("sidebar-controller").textContent = data.controller_hostname || "isaac.local";
             document.getElementById("sidebar-subnet").textContent = data.subnet || "192.168.10.0/24";
@@ -383,6 +391,212 @@ document.addEventListener("DOMContentLoaded", () => {
                 btn.disabled = false;
                 btn.textContent = "Schedule Ranks";
             }
+        });
+    }
+
+    // 8. Fetch and Manage Checkpoints
+    let cachedCheckpointsData = null;
+    let currentFilterNode = "";
+
+    async function fetchCheckpoints(nodeFilter = "") {
+        currentFilterNode = nodeFilter;
+        const tbody = document.getElementById("checkpoints-body");
+        if (!tbody) return;
+
+        try {
+            const res = await fetch("/api/checkpoints");
+            if (!res.ok) return;
+            const data = await res.json();
+            cachedCheckpointsData = data;
+
+            // Render summary metrics
+            if (data.summary) {
+                document.getElementById("ckpt-total-count").textContent = data.summary.total_checkpoints || 0;
+                document.getElementById("ckpt-total-size").textContent = `${data.summary.total_size_mb || 0} MB`;
+                document.getElementById("ckpt-nodes-accessible").textContent = `${data.summary.nodes_accessible_count} / ${data.summary.nodes_count} Mounted`;
+                document.getElementById("ckpt-latest-info").textContent =
+                    (data.summary.latest_job && data.summary.latest_checkpoint)
+                        ? `${data.summary.latest_job} (${data.summary.latest_checkpoint})`
+                        : "-";
+            }
+
+            // Render node verification cards
+            renderNodeCards(data.nodes || []);
+
+            // Render filter buttons
+            renderFilterBar(data.nodes || []);
+
+            // Render checkpoints table
+            renderCheckpointsTable(data.checkpoints || [], currentFilterNode);
+        } catch (e) {
+            console.error("Failed to fetch checkpoints:", e);
+            tbody.innerHTML = `<tr><td colspan="10" class="text-muted">Error loading checkpoints: ${e.message}</td></tr>`;
+        }
+    }
+
+    function renderNodeCards(nodes) {
+        const container = document.getElementById("node-checkpoints-grid");
+        if (!container) return;
+
+        container.innerHTML = nodes.map(n => `
+            <div class="node-checkpoint-card ${n.accessible ? 'card-important' : ''}">
+                <div class="node-card-header">
+                    <div>
+                        <div class="node-card-title">${n.hostname}</div>
+                        <div class="node-card-meta">${n.role} • ${n.worker_id}</div>
+                    </div>
+                    <span class="pill ${n.accessible ? 'pill-primary' : 'pill-outline-dark'}">
+                        ${n.accessible ? 'VERIFIED' : 'UNAVAILABLE'}
+                    </span>
+                </div>
+                <div class="node-card-meta font-mono" style="word-break: break-all;">
+                    ${n.checkpoint_dir}
+                </div>
+                <div class="node-card-stats">
+                    <div>
+                        <div class="card-label" style="margin-bottom: 2px;">Checkpoints</div>
+                        <strong>${n.checkpoints_count}</strong>
+                    </div>
+                    <div>
+                        <div class="card-label" style="margin-bottom: 2px;">Disk Free</div>
+                        <strong>${n.disk_available_gb} GB</strong>
+                    </div>
+                    <div>
+                        <div class="card-label" style="margin-bottom: 2px;">Status</div>
+                        <strong>${n.status}</strong>
+                    </div>
+                </div>
+            </div>
+        `).join("");
+    }
+
+    function renderFilterBar(nodes) {
+        const bar = document.getElementById("ckpt-filter-bar");
+        if (!bar) return;
+
+        const buttons = [
+            `<button class="filter-btn ${currentFilterNode === "" ? 'active' : ''}" data-node="">All Nodes</button>`
+        ];
+
+        nodes.forEach(n => {
+            const isActive = currentFilterNode === n.hostname ? "active" : "";
+            buttons.push(`<button class="filter-btn ${isActive}" data-node="${n.hostname}">${n.hostname}</button>`);
+        });
+
+        bar.innerHTML = buttons.join("");
+
+        bar.querySelectorAll(".filter-btn").forEach(btn => {
+            btn.addEventListener("click", () => {
+                const selected = btn.getAttribute("data-node");
+                currentFilterNode = selected;
+                bar.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+                btn.classList.add("active");
+                if (cachedCheckpointsData) {
+                    renderCheckpointsTable(cachedCheckpointsData.checkpoints || [], currentFilterNode);
+                }
+            });
+        });
+    }
+
+    function renderCheckpointsTable(checkpoints, filterNode) {
+        const tbody = document.getElementById("checkpoints-body");
+        if (!tbody) return;
+
+        let filtered = checkpoints;
+        if (filterNode) {
+            filtered = checkpoints.filter(c => {
+                return (c.verified_nodes && c.verified_nodes.includes(filterNode)) ||
+                       (c.saved_by_node && c.saved_by_node.includes(filterNode));
+            });
+        }
+
+        if (filtered.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="10" class="text-muted">${filterNode ? `No checkpoints found matching node ${filterNode}` : 'No saved checkpoints found in cluster'}</td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = filtered.map(c => {
+            const verifiedBadges = (c.verified_nodes || []).map(nodeHost =>
+                `<span class="pill pill-primary" style="font-size: 0.72rem; padding: 2px 6px; margin: 1px;">${nodeHost}</span>`
+            ).join(" ");
+
+            const latestBadge = c.is_latest
+                ? `<span class="pill pill-primary" style="font-size: 0.72rem; padding: 2px 6px; margin-left: 4px;">LATEST</span>`
+                : "";
+
+            return `
+                <tr>
+                    <td class="font-mono"><strong>${c.job_id}</strong></td>
+                    <td><span class="font-mono">${c.checkpoint_name}</span> ${latestBadge}</td>
+                    <td>${c.epoch}</td>
+                    <td>${c.global_step}</td>
+                    <td>${c.loss.toFixed(4)}</td>
+                    <td><span class="font-mono">${c.saved_by_node}</span></td>
+                    <td>${verifiedBadges || '<span class="text-muted">Unverified</span>'}</td>
+                    <td>${c.model_size_mb} MB</td>
+                    <td><span class="text-muted">${c.created_at}</span></td>
+                    <td>
+                        <button class="btn btn-secondary btn-sm btn-inspect-ckpt" data-job="${c.job_id}" data-ckpt="${c.checkpoint_name}">
+                            Inspect
+                        </button>
+                    </td>
+                </tr>
+            `;
+        }).join("");
+
+        // Bind Inspect buttons
+        tbody.querySelectorAll(".btn-inspect-ckpt").forEach(btn => {
+            btn.addEventListener("click", async () => {
+                const jobId = btn.getAttribute("data-job");
+                const ckptName = btn.getAttribute("data-ckpt");
+                await inspectCheckpoint(jobId, ckptName);
+            });
+        });
+    }
+
+    async function inspectCheckpoint(jobId, ckptName) {
+        const card = document.getElementById("checkpoint-detail-card");
+        if (!card) return;
+
+        try {
+            const res = await fetch(`/api/checkpoints/${jobId}/${ckptName}/metadata`);
+            if (!res.ok) {
+                alert(`Failed to load metadata for ${ckptName}`);
+                return;
+            }
+            const meta = await res.json();
+
+            const item = ((cachedCheckpointsData && cachedCheckpointsData.checkpoints) || []).find(
+                c => c.job_id === jobId && c.checkpoint_name === ckptName
+            );
+
+            document.getElementById("detail-ckpt-name").textContent = `${jobId} / ${ckptName}`;
+            document.getElementById("detail-ckpt-path").textContent = item ? item.path : `/srv/checkpoints/${jobId}/${ckptName}`;
+            document.getElementById("detail-ckpt-dataset").textContent = item ? `${item.dataset_id}:${item.dataset_version}` : "-";
+            document.getElementById("detail-ckpt-files").textContent = item ? item.saved_files.join(", ") : "-";
+            document.getElementById("detail-ckpt-json").textContent = JSON.stringify(meta, null, 2);
+
+            card.classList.remove("hidden");
+            card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        } catch (err) {
+            alert(`Error: ${err.message}`);
+        }
+    }
+
+    // Detail card close button
+    const btnCloseDetail = document.getElementById("btn-close-detail");
+    if (btnCloseDetail) {
+        btnCloseDetail.addEventListener("click", () => {
+            const card = document.getElementById("checkpoint-detail-card");
+            if (card) card.classList.add("hidden");
+        });
+    }
+
+    // Refresh checkpoints button
+    const btnRefreshCkpts = document.getElementById("btn-refresh-checkpoints");
+    if (btnRefreshCkpts) {
+        btnRefreshCkpts.addEventListener("click", () => {
+            fetchCheckpoints(currentFilterNode);
         });
     }
 

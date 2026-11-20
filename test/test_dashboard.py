@@ -64,3 +64,17 @@ def test_dashboard_api_cache(client):
     assert response.status_code == 200
     cache = response.json()
     assert isinstance(cache, list)
+
+
+def test_dashboard_api_checkpoints(client):
+    """Verifies the /api/checkpoints endpoint returns structured node and checkpoint arrays."""
+    response = client.get("/api/checkpoints")
+    assert response.status_code == 200
+    data = response.json()
+    assert "summary" in data
+    assert "nodes" in data
+    assert "checkpoints" in data
+    assert isinstance(data["nodes"], list)
+    assert isinstance(data["checkpoints"], list)
+    assert "total_checkpoints" in data["summary"]
+    assert "nodes_count" in data["summary"]
