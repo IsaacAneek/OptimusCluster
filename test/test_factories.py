@@ -180,7 +180,7 @@ def _run_worker(tmp_path, training_args):
     os.makedirs(training_args["logs_dir"], exist_ok=True)
     return subprocess.run(
         [sys.executable, "-m", "optimus.training.worker_entry", "--training-args", json.dumps(training_args)],
-        cwd=REPO_ROOT,  # the worker daemon runs from the repo root
+        cwd=REPO_ROOT,  # optimusd runs from the repo root
         env=env,
         capture_output=True,
         text=True,

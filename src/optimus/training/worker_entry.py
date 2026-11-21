@@ -1,6 +1,6 @@
 """
 Optimus Worker Training Process Entrypoint.
-Standard execution script spawned by the worker daemon to run DDP training.
+Standard execution script spawned by optimusd (the worker daemon) to run DDP training.
 Initializes Gloo process group, runs epoch batches, synchronizes gradients,
 and allows Rank 0 to write atomic checkpoints.
 """
@@ -202,7 +202,7 @@ def run_training():
                 f"Epoch {epoch}/{epochs-1} complete - Loss: {avg_loss:.4f}, Throughput: {throughput:.1f} samples/s"
             )
 
-            # Update status file for worker daemon
+            # Update status file for optimusd
             update_status_file(logs_dir, job_id, epoch, global_step, avg_loss, throughput)
 
             # Rank 0 commits atomic checkpoint

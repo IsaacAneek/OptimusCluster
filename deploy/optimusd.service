@@ -1,0 +1,20 @@
+# systemd unit for optimusd, the Optimus worker daemon.
+# Install: sudo cp deploy/optimusd.service /etc/systemd/system/ && sudo systemctl daemon-reload
+# Adjust User / WorkingDirectory / config path for your node.
+[Unit]
+Description=optimusd - Optimus worker daemon (REST control-plane API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/OptimusDL
+ExecStart=/usr/bin/python3 -m optimus.worker.optimusd --config /home/pi/OptimusDL/config.yaml
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

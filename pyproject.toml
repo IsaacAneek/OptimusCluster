@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.scripts]
-optimus-worker = "optimus.worker.daemon:main"
+optimusd = "optimus.worker.optimusd:main"
 optimus-cluster = "optimus.cluster:main"
 
 [tool.setuptools.packages.find]

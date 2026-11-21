@@ -9,9 +9,17 @@ from optimus.dataset import Dataset, DatasetManifest
 from optimus.sdk import Optimus
 from optimus.trainer import Trainer
 from optimus.worker.server import WorkerServer
-from optimus.worker.daemon import WorkerDaemon
 
 __version__ = "0.1.0"
+
+
+def __getattr__(name):
+    # Imported lazily so ``python -m optimus.worker.optimusd`` runs cleanly.
+    if name in ("OptimusDaemon", "WorkerDaemon"):
+        from optimus.worker import optimusd
+
+        return getattr(optimusd, name)
+    raise AttributeError(f"module 'optimus' has no attribute {name!r}")
 
 __all__ = [
     "Optimus",
@@ -25,5 +33,6 @@ __all__ = [
     "ProbeManager",
     "WorkerNodeState",
     "WorkerServer",
+    "OptimusDaemon",
     "WorkerDaemon",
 ]

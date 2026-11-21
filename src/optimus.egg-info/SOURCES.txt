@@ -24,13 +24,13 @@ src/optimus/controller/probing.py
 src/optimus/controller/scheduler.py
 src/optimus/dashboard/app.py
 src/optimus/protocol/__init__.py
-src/optimus/protocol/framing.py
+src/optimus/protocol/rest.py
 src/optimus/protocol/generated/__init__.py
 src/optimus/protocol/generated/messages_pb2.py
 src/optimus/training/ddp.py
 src/optimus/training/sampler.py
 src/optimus/training/worker_entry.py
-src/optimus/worker/daemon.py
+src/optimus/worker/optimusd.py
 src/optimus/worker/executor.py
 src/optimus/worker/resource_info.py
 src/optimus/worker/server.py

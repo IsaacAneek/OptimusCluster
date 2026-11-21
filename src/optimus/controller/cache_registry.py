@@ -13,9 +13,7 @@ from optimus.controller.communication import WorkerClientManager
 from optimus.dataset import DatasetManifest
 from optimus.protocol.generated.messages_pb2 import (
     CachedFileEntry,
-    CacheInventoryRequest,
     CacheInventoryResponse,
-    CacheSummaryRequest,
     CacheSummaryResponse,
 )
 
@@ -48,11 +46,7 @@ class ClusterCacheCoordinator:
     ) -> CacheSummaryResponse:
         """Queries a worker for a lightweight cache summary."""
         client = self.client_manager.get_client(hostname, port)
-        req = CacheSummaryRequest(dataset_id=dataset_id, dataset_version=dataset_version)
-        resp_env = client.send_request("cache_summary_request", req)
-        if resp_env.WhichOneof("payload") != "cache_summary_response":
-            raise RuntimeError(f"Unexpected response: {resp_env.WhichOneof('payload')}")
-        return resp_env.cache_summary_response
+        return client.get_cache_summary(dataset_id, dataset_version)
 
     def get_inventory(
         self,
@@ -80,18 +74,13 @@ class ClusterCacheCoordinator:
         total_cached_bytes = 0
 
         while True:
-            req = CacheInventoryRequest(
+            resp: CacheInventoryResponse = client.get_cache_inventory(
                 dataset_id=dataset_id,
                 dataset_version=dataset_version,
                 known_revision=known_rev,
-                page_number=page,
+                page=page,
                 page_size=page_size,
             )
-            resp_env = client.send_request("cache_inventory_request", req)
-            if resp_env.WhichOneof("payload") != "cache_inventory_response":
-                raise RuntimeError(f"Unexpected response: {resp_env.WhichOneof('payload')}")
-
-            resp: CacheInventoryResponse = resp_env.cache_inventory_response
             worker_id = resp.worker_id
             final_rev = resp.registry_revision
             total_cached_bytes = resp.total_cached_bytes

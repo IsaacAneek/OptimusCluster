@@ -76,14 +76,7 @@ class DDPLauncher:
                 resume_checkpoint_path=resume_checkpoint_path,
             )
 
-            resp_env = client.send_request("job_submit", req)
-            if resp_env.WhichOneof("payload") != "job_response":
-                raise RuntimeError(
-                    f"Worker {node.hostname}:{node.port} returned unexpected payload: "
-                    f"{resp_env.WhichOneof('payload')}"
-                )
-
-            resp: JobResponse = resp_env.job_response
+            resp: JobResponse = client.submit_job(req)
             if not resp.accepted:
                 logger.error(
                     f"Worker {node.hostname}:{node.port} rejected job '{schedule_result.job_id}': "

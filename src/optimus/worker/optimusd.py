@@ -1,7 +1,9 @@
 """
-Optimus Worker Daemon.
-Lightweight background process running on each worker node.
-Listens for controller queries and executes training workloads.
+optimusd: the Optimus worker daemon.
+Lightweight background process running on each worker node. Serves the
+control-plane REST API for the controller and executes training workloads.
+
+Run with ``optimusd --config config.yaml`` or ``python -m optimus.worker.optimusd``.
 """
 
 import argparse
@@ -18,10 +20,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
 )
-logger = logging.getLogger("optimus.worker.daemon")
+logger = logging.getLogger("optimusd")
 
 
-class WorkerDaemon:
+class OptimusDaemon:
     def __init__(
         self,
         worker_id: str,
@@ -48,10 +50,15 @@ class WorkerDaemon:
                 config.cache.directory if config else "/var/cache/optimus"
             ),
         )
+        self.server.on_shutdown = self._request_exit
+        self._running = False
+
+    def _request_exit(self) -> None:
+        logger.info("Shutdown requested via REST API, exiting...")
         self._running = False
 
     def start(self) -> None:
-        logger.info(f"Starting Optimus Worker Daemon '{self.worker_id}' on {self.hostname}:{self.port}")
+        logger.info(f"Starting optimusd '{self.worker_id}' on {self.hostname}:{self.port}")
         self.server.start()
         self._running = True
 
@@ -65,19 +72,24 @@ class WorkerDaemon:
 
         while self._running:
             time.sleep(1.0)
+        self.stop()
 
     def stop(self) -> None:
         self._running = False
         self.server.stop()
-        logger.info("Optimus Worker Daemon stopped successfully.")
+        logger.info("optimusd stopped successfully.")
+
+
+# Backwards-compatible alias
+WorkerDaemon = OptimusDaemon
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Optimus Worker Daemon")
+    parser = argparse.ArgumentParser(prog="optimusd", description="optimusd: Optimus worker daemon (REST control-plane API)")
     parser.add_argument("--config", type=str, default="config.yaml", help="Path to config.yaml")
     parser.add_argument("--worker-id", type=str, default=None, help="Worker ID (defaults to hostname)")
     parser.add_argument("--hostname", type=str, default=None, help="Worker hostname")
-    parser.add_argument("--port", type=int, default=None, help="TCP port to listen on")
+    parser.add_argument("--port", type=int, default=None, help="HTTP port for the REST API")
     args = parser.parse_args()
 
     config = None
@@ -90,7 +102,7 @@ def main():
     port = args.port or (config.controller.tcp_port if config else 45870)
     secret = config.cluster.secret if config else ""
 
-    daemon = WorkerDaemon(
+    daemon = OptimusDaemon(
         worker_id=worker_id,
         hostname=local_hostname,
         port=port,

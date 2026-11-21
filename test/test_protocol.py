@@ -1,142 +1,249 @@
 """
-Tests for Optimus TCP Framing, Message Serialization, and Protocol Buffers Envelope.
+Tests for the optimusd REST control-plane API: routing, JSON bodies, auth,
+protocol-version checks, size limits and error responses.
 """
 
+import http.client
+import json
 import socket
-import struct
-import threading
-import time
+
 import pytest
 
-from optimus.protocol.framing import (
-    CURRENT_PROTOCOL_VERSION,
-    DEFAULT_MAX_MESSAGE_SIZE,
-    MessageTooLargeError,
-    ProtocolError,
-    create_envelope,
-    recv_exact,
-    recv_message,
-    send_message,
+from optimus.controller.communication import (
+    WorkerClient,
+    WorkerCommunicationError,
+    WorkerRequestError,
 )
-from optimus.protocol.generated.messages_pb2 import (
-    Envelope,
-    StatusRequest,
+from optimus.protocol import rest
+from optimus.protocol.messages import (
+    CacheInventoryResponse,
+    CachedFileEntry,
+    JobState,
+    JobSubmit,
+    ResourceResponse,
     StatusResponse,
+    ThermalZone,
     WorkerState,
 )
+from optimus.worker.server import WorkerServer
 
 
-def test_create_envelope():
-    req = StatusRequest(probe_only=True)
-    env = create_envelope(
-        payload_field_name="status_request",
-        payload_obj=req,
-        sender_id="controller-01",
-        protocol_version=1,
-        auth_token="secret-123",
+def get_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture
+def worker(tmp_path):
+    port = get_free_port()
+    server = WorkerServer(
+        worker_id="pi-rest-01",
+        hostname="localhost",
+        port=port,
+        host="127.0.0.1",
+        cluster_secret="s3cret",
+        max_message_size=64 * 1024,
+        cache_dir=str(tmp_path / "cache"),
+        logs_dir=str(tmp_path / "logs"),
     )
-    assert env.protocol_version == 1
-    assert env.sender_id == "controller-01"
-    assert env.auth_token == "secret-123"
-    assert env.WhichOneof("payload") == "status_request"
-    assert env.status_request.probe_only is True
+    server.start()
+    yield server
+    server.stop()
 
 
-def test_framing_send_recv_roundtrip():
-    server_sock, client_sock = socket.socketpair()
+def raw_request(port, method, path, body=None, headers=None):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
     try:
-        req = StatusRequest(probe_only=True)
-        env = create_envelope("status_request", req, sender_id="test-client")
-
-        # Send from client to server
-        send_message(client_sock, env)
-
-        # Receive on server
-        received_env = recv_message(server_sock)
-        assert received_env.sender_id == "test-client"
-        assert received_env.WhichOneof("payload") == "status_request"
-        assert received_env.status_request.probe_only is True
+        conn.request(method, path, body=body, headers=headers or {})
+        resp = conn.getresponse()
+        return resp.status, dict(resp.getheaders()), resp.read()
     finally:
-        server_sock.close()
-        client_sock.close()
+        conn.close()
 
 
-def test_framing_multiple_messages_on_single_connection():
-    server_sock, client_sock = socket.socketpair()
-    try:
-        messages = []
-        for i in range(5):
-            resp = StatusResponse(
-                worker_id=f"worker-{i}",
-                hostname=f"host-{i}.local",
-                protocol_version=CURRENT_PROTOCOL_VERSION,
-                status=WorkerState.AVAILABLE,
-                active_job_count=i,
-            )
-            env = create_envelope("status_response", resp, sender_id=f"worker-{i}")
-            messages.append(env)
-            send_message(client_sock, env)
-
-        for i in range(5):
-            rec_env = recv_message(server_sock)
-            assert rec_env.sender_id == f"worker-{i}"
-            assert rec_env.status_response.worker_id == f"worker-{i}"
-            assert rec_env.status_response.active_job_count == i
-    finally:
-        server_sock.close()
-        client_sock.close()
+def auth():
+    return {"Authorization": "Bearer s3cret"}
 
 
-def test_framing_partial_reads():
-    """Simulates network fragmentation where bytes arrive in small slices."""
-    server_sock, client_sock = socket.socketpair()
-    try:
-        req = StatusRequest(probe_only=False)
-        env = create_envelope("status_request", req, sender_id="fragment-sender")
-        payload = env.SerializeToString()
-        header = struct.pack(">I", len(payload))
-        full_bytes = header + payload
-
-        def send_fragmented():
-            for byte_idx in range(len(full_bytes)):
-                client_sock.sendall(full_bytes[byte_idx : byte_idx + 1])
-                time.sleep(0.001)
-
-        t = threading.Thread(target=send_fragmented)
-        t.start()
-
-        received_env = recv_message(server_sock)
-        t.join()
-
-        assert received_env.sender_id == "fragment-sender"
-        assert received_env.status_request.probe_only is False
-    finally:
-        server_sock.close()
-        client_sock.close()
+# ------------------------------------------------------------ message codec
 
 
-def test_framing_message_too_large():
-    server_sock, client_sock = socket.socketpair()
-    try:
-        req = StatusRequest(probe_only=True)
-        env = create_envelope("status_request", req, sender_id="oversized")
-        # Set max_message_size to smaller than envelope
-        with pytest.raises(MessageTooLargeError):
-            send_message(client_sock, env, max_message_size=5)
-    finally:
-        server_sock.close()
-        client_sock.close()
+def test_message_json_roundtrip():
+    resp = ResourceResponse(
+        worker_id="w1",
+        cpu_percent=12.5,
+        thermals=[ThermalZone(zone_name="cpu", temperature_c=48.0)],
+    )
+    decoded = rest.decode(rest.encode(resp), ResourceResponse)
+    assert decoded == resp
+    assert isinstance(decoded.thermals[0], ThermalZone)
+
+    inv = CacheInventoryResponse(files=[CachedFileEntry(relative_path="a.bin", file_size=3)])
+    assert rest.decode(rest.encode(inv), CacheInventoryResponse).files[0].relative_path == "a.bin"
 
 
-def test_framing_version_mismatch():
-    server_sock, client_sock = socket.socketpair()
-    try:
-        req = StatusRequest(probe_only=True)
-        env = create_envelope("status_request", req, sender_id="old-client", protocol_version=99)
-        send_message(client_sock, env)
+def test_decode_ignores_unknown_fields_and_rejects_bad_json():
+    msg = rest.decode(b'{"worker_id": "w", "future_field": 1}', StatusResponse)
+    assert msg.worker_id == "w"
+    with pytest.raises(rest.ProtocolError):
+        rest.decode(b"{not json", StatusResponse)
+    with pytest.raises(rest.ProtocolError):
+        rest.decode(b"[1, 2]", StatusResponse)
 
-        with pytest.raises(ProtocolError, match="Protocol version mismatch"):
-            recv_message(server_sock, expected_protocol_version=1)
-    finally:
-        server_sock.close()
-        client_sock.close()
+
+def test_job_paths_are_url_encoded():
+    assert rest.job_path("job 1/x") == "/v1/jobs/job%201%2Fx"
+    assert rest.job_stop_path("j1") == "/v1/jobs/j1/stop"
+
+
+# ------------------------------------------------------------ server + client
+
+
+def test_status_endpoint_raw_http(worker):
+    status, headers, body = raw_request(worker.port, "GET", "/v1/status", headers=auth())
+    assert status == 200
+    assert headers["Content-Type"] == "application/json"
+    assert headers[rest.PROTOCOL_VERSION_HEADER] == "1"
+    data = json.loads(body)
+    assert data["worker_id"] == "pi-rest-01"
+    assert data["status"] == WorkerState.AVAILABLE
+
+
+def test_client_typed_endpoints(worker):
+    client = WorkerClient("127.0.0.1", worker.port, timeout=3, cluster_secret="s3cret")
+
+    st = client.get_status()
+    assert isinstance(st, StatusResponse) and st.worker_id == "pi-rest-01"
+
+    res = client.get_resources()
+    assert res.worker_id == "pi-rest-01" and res.ram_total_mb > 0
+
+    summary = client.get_cache_summary("ds", "v1")
+    assert summary.dataset_id == "ds" and summary.dataset_version == "v1"
+
+    inv = client.get_cache_inventory("ds", "v1", page=1, page_size=10)
+    assert inv.dataset_id == "ds" and inv.files == []
+
+    ckpts = client.list_checkpoints(checkpoint_dir="/definitely/missing/dir")
+    assert ckpts.accessible is False and "does not exist" in ckpts.error_message
+
+    job = client.get_job_status("no-such-job")
+    assert job.status == JobState.JOB_UNKNOWN
+
+    stopped = client.stop_job("no-such-job", reason="test")
+    assert stopped.status == WorkerState.AVAILABLE
+
+
+def test_auth_required(worker):
+    status, _, body = raw_request(worker.port, "GET", "/v1/status")
+    assert status == 401
+    assert json.loads(body)["error_code"] == "UNAUTHORIZED"
+
+    bad = WorkerClient("127.0.0.1", worker.port, timeout=3, cluster_secret="wrong")
+    with pytest.raises(WorkerRequestError) as ei:
+        bad.get_status()
+    assert ei.value.status == 401 and ei.value.error_code == "UNAUTHORIZED"
+
+
+def test_version_mismatch_rejected(worker):
+    headers = {**auth(), rest.PROTOCOL_VERSION_HEADER: "99"}
+    status, _, body = raw_request(worker.port, "GET", "/v1/status", headers=headers)
+    assert status == 400
+    assert json.loads(body)["error_code"] == "VERSION_MISMATCH"
+
+
+def test_unknown_route_and_wrong_method(worker):
+    status, _, body = raw_request(worker.port, "GET", "/v1/nope", headers=auth())
+    assert status == 404 and json.loads(body)["error_code"] == "NOT_FOUND"
+
+    status, _, body = raw_request(worker.port, "POST", "/v1/status", body=b"{}", headers=auth())
+    assert status == 405 and json.loads(body)["error_code"] == "METHOD_NOT_ALLOWED"
+
+
+def test_bad_bodies_rejected(worker):
+    status, _, body = raw_request(worker.port, "POST", "/v1/jobs", body=b"{oops", headers=auth())
+    assert status == 400 and json.loads(body)["error_code"] == "BAD_REQUEST"
+
+    status, _, body = raw_request(worker.port, "POST", "/v1/jobs", body=b"{}", headers=auth())
+    assert status == 400 and "job_id" in json.loads(body)["error_message"]
+
+    status, _, body = raw_request(
+        worker.port, "GET", "/v1/cache/inventory?page=abc", headers=auth()
+    )
+    assert status == 400
+
+
+def test_body_too_large(worker):
+    big = b"{" + b" " * (worker.max_message_size + 10) + b"}"
+    status, _, body = raw_request(worker.port, "POST", "/v1/jobs", body=big, headers=auth())
+    assert status == 413
+    assert json.loads(body)["error_code"] == "MESSAGE_TOO_LARGE"
+
+    client = WorkerClient(
+        "127.0.0.1", worker.port, cluster_secret="s3cret", max_message_size=50
+    )
+    with pytest.raises(rest.MessageTooLargeError):
+        client.submit_job(JobSubmit(job_id="x" * 100))
+
+
+def test_job_rejection_returns_409(worker, monkeypatch):
+    from optimus.protocol.messages import JobResponse
+
+    monkeypatch.setattr(
+        worker.executor,
+        "submit_job",
+        lambda req: JobResponse(job_id=req.job_id, accepted=False, rejection_reason="busy"),
+    )
+    status, _, body = raw_request(
+        worker.port, "POST", "/v1/jobs", body=rest.encode(JobSubmit(job_id="j1")), headers=auth()
+    )
+    assert status == 409 and json.loads(body)["accepted"] is False
+
+    client = WorkerClient("127.0.0.1", worker.port, cluster_secret="s3cret")
+    resp = client.submit_job(JobSubmit(job_id="j1"))
+    assert resp.accepted is False and resp.rejection_reason == "busy"
+
+
+def test_custom_route_registration(worker):
+    worker.register_route(
+        "GET", "/v1/echo/{name}", lambda req: (200, StatusResponse(worker_id=req.path_params["name"]))
+    )
+    client = WorkerClient("127.0.0.1", worker.port, cluster_secret="s3cret")
+    _, data = client.request("GET", "/v1/echo/hello%20world")
+    assert data["worker_id"] == "hello world"
+
+
+def test_shutdown_endpoint(tmp_path):
+    port = get_free_port()
+    server = WorkerServer(
+        worker_id="pi-bye",
+        hostname="localhost",
+        port=port,
+        host="127.0.0.1",
+        cache_dir=str(tmp_path / "cache"),
+        logs_dir=str(tmp_path / "logs"),
+    )
+    server.start()
+    client = WorkerClient("127.0.0.1", port, timeout=2)
+    resp = client.shutdown(reason="test")
+    assert resp.status == WorkerState.UNAVAILABLE
+
+    import time
+
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        try:
+            client.get_status()
+        except WorkerCommunicationError:
+            break
+        time.sleep(0.1)
+    else:
+        server.stop()
+        pytest.fail("Server still answering after shutdown")
+
+
+def test_connection_refused_is_communication_error():
+    client = WorkerClient("127.0.0.1", get_free_port(), timeout=0.5)
+    with pytest.raises(WorkerCommunicationError):
+        client.get_status()

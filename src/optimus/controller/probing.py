@@ -11,14 +11,9 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from optimus.controller.communication import (
-    WorkerClientManager,
-    WorkerCommunicationError,
-)
-from optimus.protocol.generated.messages_pb2 import (
-    ResourceRequest,
+from optimus.controller.communication import WorkerClientManager
+from optimus.protocol.messages import (
     ResourceResponse,
-    StatusRequest,
     StatusResponse,
     WorkerState,
 )
@@ -87,7 +82,7 @@ class ProbeManager:
     def probe_worker(self, hostname: str, port: int, probe_only: bool = False) -> WorkerNodeState:
         """
         Sends unified probe to a worker and updates availability and resource metrics.
-        Consolidates telemetry into a single TCP roundtrip.
+        Consolidates telemetry into a single HTTP request.
         """
         key = (hostname, port)
         with self._lock:
@@ -98,17 +93,12 @@ class ProbeManager:
             node_state = self._workers[key]
 
         client = self.client_manager.get_client(hostname, port)
-        req_field = "status_request" if probe_only else "resource_request"
-        req = StatusRequest(probe_only=True) if probe_only else ResourceRequest(detailed=False)
         now = time.time()
         node_state.last_probe_time = now
 
         try:
-            resp_env = client.send_request(req_field, req)
-            payload_type = resp_env.WhichOneof("payload")
-
-            if payload_type == "resource_response":
-                resp: ResourceResponse = resp_env.resource_response
+            if not probe_only:
+                resp: ResourceResponse = client.get_resources()
                 with self._lock:
                     node_state.worker_id = resp.worker_id
                     node_state.state = resp.status
@@ -123,8 +113,8 @@ class ProbeManager:
                     node_state.consecutive_failures = 0
                     node_state.last_success_time = now
                     node_state.last_error = None
-            elif payload_type == "status_response":
-                resp: StatusResponse = resp_env.status_response
+            else:
+                resp: StatusResponse = client.get_status()
                 with self._lock:
                     node_state.worker_id = resp.worker_id
                     node_state.state = resp.status
@@ -133,11 +123,6 @@ class ProbeManager:
                     node_state.consecutive_failures = 0
                     node_state.last_success_time = now
                     node_state.last_error = None
-            elif payload_type == "error_response":
-                err = resp_env.error_response
-                raise WorkerCommunicationError(f"Worker returned error: {err.error_message}")
-            else:
-                raise WorkerCommunicationError(f"Unexpected response payload: {payload_type}")
 
         except Exception as ex:
             with self._lock:

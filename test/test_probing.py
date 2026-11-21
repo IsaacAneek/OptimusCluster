@@ -154,7 +154,8 @@ def test_cluster_secret_authentication():
         # Probe with wrong secret should fail
         state = bad_probe_mgr.probe_worker("localhost", port)
         assert state.consecutive_failures == 1
-        assert "Unauthorized" in (state.last_error or "") or "error" in (state.last_error or "").lower()
+        assert "401" in (state.last_error or "")
+        assert "UNAUTHORIZED" in (state.last_error or "")
 
         # Probe with good secret should succeed
         state = good_probe_mgr.probe_worker("localhost", port)

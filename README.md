@@ -10,7 +10,7 @@ Optimus abstracts distributed infrastructure so ML developers write ordinary PyT
 
 1. [Architectural Principles & Streamlined Design](#1-architectural-principles--streamlined-design)
 2. [Cluster Topology & Hardware Model](#2-cluster-topology--hardware-model)
-3. [Binary TCP Framing & Lightweight Protocol](#3-binary-tcp-framing--lightweight-protocol)
+3. [optimusd REST Control-Plane API](#3-optimusd-rest-control-plane-api)
 4. [Authoritative Datasets & Pure-Python Atomic Caching](#4-authoritative-datasets--pure-python-atomic-caching)
 5. [Worker SQLite Cache Registry](#5-worker-sqlite-cache-registry)
 6. [Locality-Aware Weighted Scheduler](#6-locality-aware-weighted-scheduler)
@@ -25,10 +25,10 @@ Optimus abstracts distributed infrastructure so ML developers write ordinary PyT
 
 ## 1. Architectural Principles & Streamlined Design
 
-Optimus eliminates complex distributed systems frameworks (Kubernetes, Ray, Slurm, Prometheus, Raft) and heavyweight external binary dependencies in favor of deterministic Linux OS primitives, direct TCP sockets, length-prefixed JSON serialization, POSIX atomic file operations, and SQLite WAL transactions:
+Optimus eliminates complex distributed systems frameworks (Kubernetes, Ray, Slurm, Prometheus, Raft) and heavyweight external binary dependencies in favor of deterministic Linux OS primitives, a small stdlib-only REST/JSON control API, POSIX atomic file operations, and SQLite WAL transactions:
 
 - **Controller-Initiated Probing (Zero Worker Heartbeats)**:
-  Worker nodes remain strictly passive TCP listeners on port `45870`. They never initiate background heartbeats or broadcast unsolicited resource metrics. The controller polls workers on demand (`StatusRequest`, `ResourceRequest`, `CacheInventoryRequest`, `CheckpointListRequest`) in consolidated single-roundtrip telemetry exchanges. If a worker misses 3 consecutive probes, the controller marks it `UNAVAILABLE`.
+  Worker nodes run `optimusd`, a strictly passive HTTP server on port `45870`. They never initiate background heartbeats or broadcast unsolicited resource metrics. The controller polls workers on demand (`GET /v1/status`, `/v1/resources`, `/v1/cache/inventory`, `/v1/checkpoints`) in consolidated single-request telemetry exchanges. If a worker misses 3 consecutive probes, the controller marks it `UNAVAILABLE`.
 - **Pure-Python Atomic Caching (No C/FUSE Overhead)**:
   The controller maintains immutable dataset versions exported read-only via standard NFS (`/srv/datasets`). Workers mount NFS at `/mnt/nfs-origin` and access data via an atomic, multi-process safe Python cache engine (`fcntl.flock`). On cache miss, the file is streamed in 64 KiB chunks, verified with streaming SHA-256, and atomically committed to `/var/cache/optimus/`. On cache hit, reads are served locally with zero NFS traffic.
 - **Locality-Weighted Rank Assignment**:
@@ -57,7 +57,7 @@ Optimus eliminates complex distributed systems frameworks (Kubernetes, Ray, Slur
 |                                       v                                               |
 |                             [ selected_nodes.json ]                                   |
 +---------------------------------------|-----------------------------------------------+
-                                        | Length-Prefixed JSON Framing over TCP :45870
+                                        | REST / JSON over HTTP :45870 (control plane)
          +------------------------------+-------------------------------+
          |                                                              |
          v                                                              v
@@ -65,8 +65,8 @@ Optimus eliminates complex distributed systems frameworks (Kubernetes, Ray, Slur
 |       WORKER 1 (pi02.local)   |              |       WORKER 2 (pi03.local)    |
 |                               |              |                                |
 |  +-------------------------+  |              |  +--------------------------+  |
-|  | Optimus Worker Daemon   |  |              |  | Optimus Worker Daemon    |  |
-|  | (TCP Server :45870)     |  |              |  | (TCP Server :45870)      |  |
+|  | optimusd                |  |              |  | optimusd                 |  |
+|  | (REST API :45870)       |  |              |  | (REST API :45870)        |  |
 |  +------------+------------+  |              |  +------------+-------------+  |
 |               |               |              |               |                |
 |  +------------v------------+  |              |  +------------v-------------+  |
@@ -97,44 +97,47 @@ Optimus eliminates complex distributed systems frameworks (Kubernetes, Ray, Slur
 - **Worker Nodes**:
   - Edge Nodes: Raspberry Pi 5 (Quad-core ARM Cortex-A76, 8GB RAM, Gigabit LAN)
   - Typical mDNS hostnames: `pi02.local` (`192.168.10.150`), `pi03.local` (`192.168.10.101`)
-  - Responsibilities: Passive TCP daemon (`optimus-worker.service`), local SQLite cache database, atomic cache manager, training subprocess executor.
+  - Responsibilities: Passive REST daemon `optimusd` (`optimusd.service`), local SQLite cache database, atomic cache manager, training subprocess executor.
 
 ---
 
-## 3. Binary TCP Framing & Lightweight Protocol
+## 3. optimusd REST Control-Plane API
 
-Workers and the controller communicate over persistent TCP connections. HTTP/REST is used solely for the browser dashboard; inter-node cluster control uses direct TCP sockets on port `45870`.
+Every worker runs **`optimusd`**, the Optimus worker daemon. The controller talks to it over a small REST API: plain HTTP/1.1 with JSON bodies on port `45870`, served and consumed with the Python standard library only (`http.server` / `http.client`, no extra dependencies). The API is defined in `src/optimus/protocol/rest.py`; request/response bodies are the dataclasses in `src/optimus/protocol/messages.py`.
 
-### 3.1 4-Byte Big-Endian Framing
-Every frame is preceded by an unsigned 4-byte big-endian payload length:
+This API is **control plane only**. Gradient all-reduce and other training traffic still flows directly between ranks over PyTorch Gloo (see section 7) and never goes through `optimusd`.
 
+### 3.1 Endpoints
+
+| Method | Path | Body / query | Response |
+|---|---|---|---|
+| `GET` | `/v1/status` | | `StatusResponse` (availability, active jobs, uptime) |
+| `GET` | `/v1/resources` | | `ResourceResponse` (CPU, RAM, cache disk, SoC thermals) |
+| `GET` | `/v1/cache/summary` | `?dataset_id=&dataset_version=` | `CacheSummaryResponse` (hits, misses, bytes, registry revision) |
+| `GET` | `/v1/cache/inventory` | `?dataset_id=&dataset_version=&known_revision=&page=&page_size=` | `CacheInventoryResponse` (paginated files with SHA-256) |
+| `GET` | `/v1/checkpoints` | `?checkpoint_dir=&job_id=` | `CheckpointListResponse` (saved checkpoints, disk space, mount status) |
+| `POST` | `/v1/jobs` | `JobSubmit` | `201` `JobResponse` if accepted, `409` `JobResponse` if rejected |
+| `GET` | `/v1/jobs/{job_id}` | | `JobStatusResponse` (state, epoch, step, loss, throughput) |
+| `POST` | `/v1/jobs/{job_id}/stop` | `JobStop` (`reason`, `graceful`) | `StatusResponse` |
+| `POST` | `/v1/shutdown` | `ShutdownRequest` (`reason`, `force`) | `202` `StatusResponse`, then the daemon exits |
+
+Enum fields (`status`) are sent as integers, see `WorkerState` and `JobState` in `messages.py`. Unknown JSON fields are ignored, so new optional fields can be added without breaking older peers.
+
+### 3.2 Headers, auth and errors
+
+- **Auth**: when `cluster.secret` is set in `config.yaml`, every request must send `Authorization: Bearer <secret>` (compared in constant time). Otherwise the daemon answers `401 UNAUTHORIZED`.
+- **Versioning**: clients send `X-Optimus-Protocol-Version: 1`; a different value gets `400 VERSION_MISMATCH`. Responses carry the same header. Paths are also versioned (`/v1`).
+- **Size limit**: bodies larger than `communication.max_message_size` (4 MiB default) are refused with `413 MESSAGE_TOO_LARGE`.
+- **Errors**: any 4xx/5xx carries an `ErrorResponse` body, e.g. `{"error_code": "NOT_FOUND", "error_message": "No route for GET /v1/nope"}`. Codes: `BAD_REQUEST`, `UNAUTHORIZED`, `VERSION_MISMATCH`, `NOT_FOUND`, `METHOD_NOT_ALLOWED`, `MESSAGE_TOO_LARGE`, `INTERNAL_ERROR`.
+
+### 3.3 Trying it by hand
+
+```bash
+curl -H "Authorization: Bearer $SECRET" http://pi02.local:45870/v1/status
+curl -H "Authorization: Bearer $SECRET" "http://pi02.local:45870/v1/checkpoints?checkpoint_dir=/srv/checkpoints"
 ```
-0                   1                   2                   3
-0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                 Payload Length (uint32, >I)                   |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|             Serialized JSON Envelope Payload                  |
-|                     Length <= 4,194,304 bytes                 |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-```
 
-The receiver validates `length <= max_message_size` (4 MiB) and uses `recv_exact` loops to prevent partial reads or stream desynchronization.
-
-### 3.2 Pure-Python Envelope Structure (`src/optimus/protocol/messages.py`)
-Eliminates Google Protobuf runtime and compiler complexity while retaining structured envelopes, cryptographic cluster tokens, and strict type safety:
-
-- **Supported Payloads**:
-  - `status_request` / `status_response`: Basic availability, active job count, uptime.
-  - `resource_request` / `resource_response`: CPU load, RAM total/available, disk capacity, SoC thermals.
-  - `cache_summary_request` / `cache_summary_response`: Per-dataset cache hits, misses, downloaded bytes, registry revision.
-  - `cache_inventory_request` / `cache_inventory_response`: Paginated file inventory with SHA-256 digests.
-  - `job_submit` / `job_response`: Spawns training subprocess with DDP rank assignments.
-  - `job_status_request` / `job_status_response`: Polls training epoch, step, loss, throughput.
-  - `job_stop`: Terminates active training subprocess.
-  - `checkpoint_list_request` / `checkpoint_list_response`: Scans and reports saved checkpoints, disk space, and mount status on that node.
+From Python, `optimus.controller.communication.WorkerClient` wraps each endpoint (`get_status()`, `get_resources()`, `get_cache_summary()`, `get_cache_inventory()`, `list_checkpoints()`, `submit_job()`, `get_job_status()`, `stop_job()`, `shutdown()`). Extra routes can be added on the worker with `WorkerServer.register_route("GET", "/v1/foo/{id}", handler)`.
 
 ---
 
@@ -319,7 +322,7 @@ Hosted on the controller at `http://isaac.local:8080`.
   - `POST /api/schedule`: Invokes the scheduler and returns selected nodes.
   - `GET /api/jobs`: Active and completed jobs list.
   - `POST /api/jobs/{job_id}/stop`: Gracefully terminates a running job.
-  - `GET /api/checkpoints`: Scans cluster and queries workers over TCP for verified saved checkpoints.
+  - `GET /api/checkpoints`: Scans cluster and queries each worker's `GET /v1/checkpoints` for verified saved checkpoints.
   - `GET /api/checkpoints/{job_id}/{checkpoint_name}/metadata`: Returns raw metadata JSON.
   - `POST /api/probe`: Forces fresh hardware telemetry probe across cluster.
 
@@ -381,7 +384,7 @@ Workers never receive pickled objects or code over the network. `Trainer` sends 
 (`"package.module:function"`) plus JSON kwargs, and each worker imports and calls them locally
 (`src/optimus/training/factories.py`). Adding a new model or dataset therefore never requires
 editing `src/optimus`: put the factories in any module importable on the workers (e.g. under the
-repo root, which is the worker daemon's working directory) and pass their paths.
+repo root, which is optimusd's working directory) and pass their paths.
 
 | Argument | Contract | Default |
 |---|---|---|
@@ -458,18 +461,19 @@ See `example/cifar10.py` and `example/train_cifar10.py` for a complete custom mo
    pip3 install -e . --no-deps --break-system-packages
    ```
 
-4. **Run Worker Daemon via Systemd**:
-   Create `/etc/systemd/system/optimus-worker.service`:
+4. **Run optimusd via Systemd**:
+   A ready-made unit lives at `deploy/optimusd.service` (`sudo cp deploy/optimusd.service /etc/systemd/system/`). It contains:
    ```ini
    [Unit]
-   Description=Optimus Worker Daemon
-   After=network.target
+   Description=optimusd - Optimus worker daemon (REST control-plane API)
+   After=network-online.target
+   Wants=network-online.target
 
    [Service]
    Type=simple
    User=pi
    WorkingDirectory=/home/pi/OptimusDL
-   ExecStart=/usr/bin/python3 -m optimus.worker.daemon --config /home/pi/OptimusDL/config.yaml
+   ExecStart=/usr/bin/python3 -m optimus.worker.optimusd --config /home/pi/OptimusDL/config.yaml
    Restart=always
    RestartSec=3
    StandardOutput=journal
@@ -481,9 +485,10 @@ See `example/cifar10.py` and `example/train_cifar10.py` for a complete custom mo
    Enable and start the service:
    ```bash
    sudo systemctl daemon-reload
-   sudo systemctl enable --now optimus-worker
-   sudo systemctl status optimus-worker
+   sudo systemctl enable --now optimusd
+   sudo systemctl status optimusd
    ```
+   For a quick foreground run without systemd, use the `optimusd` console script installed by `pip install -e .` (`optimusd --config config.yaml`). If you previously installed the old `optimus-worker.service`, disable and remove it first: `sudo systemctl disable --now optimus-worker`.
 
 ---
 
@@ -542,6 +547,7 @@ optimus/
 |-- requirements.txt             # Python dependencies
 |-- pyproject.toml               # Package build metadata
 |-- README.md                    # System documentation
+|-- deploy/optimusd.service      # systemd unit for the optimusd worker daemon
 |
 |-- src/
 |   |-- optimus/
@@ -552,12 +558,12 @@ optimus/
 |       |-- trainer.py           # Managed Trainer API
 |       |
 |       |-- protocol/
-|       |   |-- messages.py      # Pure-Python message dataclasses & JSON envelopes
-|       |   |-- framing.py       # 4-byte big-endian TCP framing
+|       |   |-- messages.py      # Pure-Python message dataclasses (JSON bodies)
+|       |   |-- rest.py          # REST API routes, headers, JSON codec
 |       |   |-- generated/       # Backward-compatibility stub
 |       |
 |       |-- controller/
-|       |   |-- communication.py # Persistent TCP client pool
+|       |   |-- communication.py # REST client for optimusd workers
 |       |   |-- probing.py       # Single-roundtrip health & hardware prober
 |       |   |-- discovery.py     # Nmap subnet sweep & Avahi mDNS LAN scanner
 |       |   |-- dataset_manager.py # NFS dataset publisher & manifest verifier
@@ -568,8 +574,8 @@ optimus/
 |       |   |-- checkpoint.py    # Atomic checkpoint manager
 |       |
 |       |-- worker/
-|       |   |-- server.py        # Passive TCP listener & checkpoint reporter
-|       |   |-- daemon.py        # Worker daemon process
+|       |   |-- server.py        # optimusd REST server (http.server) & checkpoint reporter
+|       |   |-- optimusd.py      # optimusd daemon process & CLI entry point
 |       |   |-- resource_info.py # CPU, RAM, thermal reader
 |       |   |-- executor.py      # Subprocess DDP runner with dynamic Gloo binding
 |       |
@@ -597,7 +603,7 @@ optimus/
 |   |-- config.yaml              # Local test configuration
 |
 |-- test/
-    |-- test_protocol.py         # Framing, envelopes, size checks
+    |-- test_protocol.py         # REST API routing, auth, errors, size checks
     |-- test_probing.py          # Probing, threshold, recovery
     |-- test_resource.py         # Hardware telemetry probing
     |-- test_discovery.py        # Avahi & Nmap discovery

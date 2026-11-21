@@ -22,7 +22,6 @@ from pydantic import BaseModel
 from optimus.cluster import OptimusConfig
 from optimus.protocol.messages import (
     CheckpointEntry,
-    CheckpointListRequest,
     CheckpointListResponse,
     JobState,
     WorkerState,
@@ -415,24 +414,19 @@ async def collect_checkpoints_data(cluster: Optimus) -> Dict[str, Any]:
 
         try:
             client = cluster.client_manager.get_client(hostname, port)
-            req = CheckpointListRequest(checkpoint_dir=base_dir)
-
-            resp_env = await loop.run_in_executor(
-                None, client.send_request, "checkpoint_list_request", req, 2.5
+            c_resp = await loop.run_in_executor(
+                None, lambda: client.list_checkpoints(checkpoint_dir=base_dir, timeout=2.5)
             )
 
-            if resp_env:
-                payload_name = resp_env.WhichOneof("payload")
-                c_resp = getattr(resp_env, "checkpoint_list_response", None)
-                if c_resp:
-                    node_info["status"] = "AVAILABLE" if c_resp.accessible else "ERROR"
-                    node_info["accessible"] = c_resp.accessible
-                    node_info["worker_id"] = c_resp.worker_id or node_info["worker_id"]
-                    node_info["disk_available_gb"] = int(
-                        c_resp.disk_available_bytes / (1024 * 1024 * 1024)
-                    )
-                    node_info["checkpoints_count"] = len(c_resp.checkpoints)
-                    worker_ckpts_by_node[hostname] = c_resp.checkpoints
+            if c_resp:
+                node_info["status"] = "AVAILABLE" if c_resp.accessible else "ERROR"
+                node_info["accessible"] = c_resp.accessible
+                node_info["worker_id"] = c_resp.worker_id or node_info["worker_id"]
+                node_info["disk_available_gb"] = int(
+                    c_resp.disk_available_bytes / (1024 * 1024 * 1024)
+                )
+                node_info["checkpoints_count"] = len(c_resp.checkpoints)
+                worker_ckpts_by_node[hostname] = c_resp.checkpoints
         except Exception as e:
             node_info["error_message"] = str(e)
 

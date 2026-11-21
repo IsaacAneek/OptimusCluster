@@ -15,7 +15,6 @@ from typing import Any, Dict, List, Optional
 from optimus.cluster import OptimusConfig
 from optimus.controller.communication import WorkerClient, WorkerCommunicationError
 from optimus.protocol.messages import (
-    StatusRequest,
     StatusResponse,
     WorkerState,
 )
@@ -160,7 +159,7 @@ class NodeDiscoveryManager:
         port: int,
         timeout: float = 2.0,
     ) -> Optional[StatusResponse]:
-        """Connects to endpoint over TCP and verifies Optimus worker protocol."""
+        """Calls GET /v1/status on the endpoint to verify it is an optimusd worker."""
         client = WorkerClient(
             hostname=ip_or_host,
             port=port,
@@ -170,11 +169,8 @@ class NodeDiscoveryManager:
             max_message_size=self.config.communication.max_message_size,
         )
         try:
-            req = StatusRequest(probe_only=True)
-            resp_env = client.send_request("status_request", req)
-            if resp_env.WhichOneof("payload") == "status_response":
-                return resp_env.status_response
-            return None
+            status = client.get_status()
+            return status if status.worker_id else None
         except Exception as e:
             logger.debug(f"Worker verification failed for {ip_or_host}:{port} - {e}")
             return None

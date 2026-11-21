@@ -2,7 +2,7 @@
 CIFAR-10 model and dataset factories for Optimus.
 
 Workers import this module by path ("example.cifar10:build_model"), so it must be
-importable on every worker: the worker daemon runs from the repository root, which puts
+importable on every worker: optimusd runs from the repository root, which puts
 the ``example`` package on its import path.
 """
 

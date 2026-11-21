@@ -1,6 +1,7 @@
 """
 Optimus Protocol Package.
-Provides message models and length-prefixed framing.
+Provides the JSON message models and REST API definitions used between the
+controller and optimusd worker daemons.
 """
 
 from optimus.protocol.messages import (
@@ -16,6 +17,9 @@ from optimus.protocol.messages import (
     CacheInventoryRequest,
     CacheInventoryResponse,
     CachedFileEntry,
+    CheckpointEntry,
+    CheckpointListRequest,
+    CheckpointListResponse,
     JobSubmit,
     JobResponse,
     JobStatusRequest,
@@ -23,17 +27,13 @@ from optimus.protocol.messages import (
     JobStop,
     ShutdownRequest,
     ErrorResponse,
-    Envelope,
 )
-from optimus.protocol.framing import (
-    send_message,
-    recv_message,
-    recv_exact,
-    create_envelope,
-    ProtocolError,
-    MessageTooLargeError,
-    DEFAULT_MAX_MESSAGE_SIZE,
+from optimus.protocol.rest import (
+    API_PREFIX,
     CURRENT_PROTOCOL_VERSION,
+    DEFAULT_MAX_MESSAGE_SIZE,
+    MessageTooLargeError,
+    ProtocolError,
 )
 
 __all__ = [
@@ -49,6 +49,9 @@ __all__ = [
     "CacheInventoryRequest",
     "CacheInventoryResponse",
     "CachedFileEntry",
+    "CheckpointEntry",
+    "CheckpointListRequest",
+    "CheckpointListResponse",
     "JobSubmit",
     "JobResponse",
     "JobStatusRequest",
@@ -56,13 +59,9 @@ __all__ = [
     "JobStop",
     "ShutdownRequest",
     "ErrorResponse",
-    "Envelope",
-    "send_message",
-    "recv_message",
-    "recv_exact",
-    "create_envelope",
-    "ProtocolError",
-    "MessageTooLargeError",
-    "DEFAULT_MAX_MESSAGE_SIZE",
+    "API_PREFIX",
     "CURRENT_PROTOCOL_VERSION",
+    "DEFAULT_MAX_MESSAGE_SIZE",
+    "MessageTooLargeError",
+    "ProtocolError",
 ]

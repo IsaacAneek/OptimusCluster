@@ -1,25 +1,36 @@
 """
 Optimus Controller Communication Client.
-Manages TCP connections to worker nodes and serialized Protocol Buffers exchanges.
+Talks to optimusd worker daemons over the REST/JSON control-plane API
+(see ``optimus.protocol.rest``) using only the standard library ``http.client``.
 """
 
+import http.client
 import logging
 import socket
 import threading
-import time
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple, Type, TypeVar
+from urllib.parse import urlencode
 
-from optimus.protocol.framing import (
-    CURRENT_PROTOCOL_VERSION,
-    DEFAULT_MAX_MESSAGE_SIZE,
-    create_envelope,
-    recv_message,
-    send_message,
-    ProtocolError,
+from optimus.protocol import rest
+from optimus.protocol.messages import (
+    BaseMessage,
+    CacheInventoryResponse,
+    CacheSummaryResponse,
+    CheckpointListResponse,
+    ErrorResponse,
+    JobResponse,
+    JobStatusResponse,
+    JobStop,
+    JobSubmit,
+    ResourceResponse,
+    ShutdownRequest,
+    StatusResponse,
 )
-from optimus.protocol.generated.messages_pb2 import Envelope
+from optimus.protocol.rest import CURRENT_PROTOCOL_VERSION, DEFAULT_MAX_MESSAGE_SIZE
 
 logger = logging.getLogger("optimus.controller.communication")
+
+M = TypeVar("M", bound=BaseMessage)
 
 
 class WorkerCommunicationError(Exception):
@@ -32,8 +43,18 @@ class WorkerConnectionTimeout(WorkerCommunicationError):
     pass
 
 
+class WorkerRequestError(WorkerCommunicationError):
+    """Raised when a worker answers with an HTTP error status (ErrorResponse body)."""
+
+    def __init__(self, status: int, error_code: str, error_message: str):
+        super().__init__(f"Worker returned HTTP {status} {error_code}: {error_message}")
+        self.status = status
+        self.error_code = error_code
+        self.error_message = error_message
+
+
 class WorkerClient:
-    """Manages a single worker's TCP connection."""
+    """REST client for a single optimusd worker. Thread-safe: each call opens its own connection."""
 
     def __init__(
         self,
@@ -51,78 +72,177 @@ class WorkerClient:
         self.controller_id = controller_id
         self.max_message_size = max_message_size
 
-        self._sock: Optional[socket.socket] = None
-        self._lock = threading.Lock()
+    @property
+    def base_url(self) -> str:
+        return f"http://{self.hostname}:{self.port}"
 
-    def _connect(self) -> None:
-        if self._sock is not None:
-            return
+    # ----------------------------------------------------------------- core
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(self.timeout)
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        try:
-            sock.connect((self.hostname, self.port))
-            self._sock = sock
-            logger.debug(f"Connected to worker at {self.hostname}:{self.port}")
-        except socket.timeout as e:
-            sock.close()
-            raise WorkerConnectionTimeout(f"Connection timeout to {self.hostname}:{self.port}: {e}")
-        except OSError as e:
-            sock.close()
-            raise WorkerCommunicationError(f"Failed to connect to {self.hostname}:{self.port}: {e}")
-
-    def send_request(
+    def request(
         self,
-        payload_name: str,
-        payload_obj,
+        method: str,
+        path: str,
+        query: Optional[Dict[str, Any]] = None,
+        body: Any = None,
         timeout: Optional[float] = None,
-    ) -> Envelope:
+        ok_statuses: Iterable[int] = (200, 201, 202),
+    ) -> Tuple[int, Dict[str, Any]]:
         """
-        Sends a typed request payload wrapped in an Envelope and returns the response Envelope.
-        Re-establishes connection automatically if previous connection was severed.
+        Performs one HTTP request and returns (status, parsed JSON body).
+        Raises WorkerRequestError for non-OK statuses, WorkerConnectionTimeout on
+        timeouts, and WorkerCommunicationError on any other transport failure.
         """
         effective_timeout = timeout if timeout is not None else self.timeout
-        with self._lock:
-            try:
-                self._connect()
-                self._sock.settimeout(effective_timeout)
+        if query:
+            path = f"{path}?{urlencode({k: v for k, v in query.items() if v is not None})}"
 
-                req_env = create_envelope(
-                    payload_field_name=payload_name,
-                    payload_obj=payload_obj,
-                    sender_id=self.controller_id,
-                    protocol_version=CURRENT_PROTOCOL_VERSION,
-                    auth_token=self.cluster_secret,
+        payload = rest.encode(body) if body is not None else None
+        if payload is not None and len(payload) > self.max_message_size:
+            raise rest.MessageTooLargeError(
+                f"Request body of {len(payload)} bytes exceeds maximum {self.max_message_size} bytes"
+            )
+
+        headers = {
+            "Accept": rest.JSON_CONTENT_TYPE,
+            "Connection": "close",
+            rest.PROTOCOL_VERSION_HEADER: str(CURRENT_PROTOCOL_VERSION),
+            rest.SENDER_HEADER: self.controller_id,
+        }
+        if payload is not None:
+            headers["Content-Type"] = rest.JSON_CONTENT_TYPE
+        if self.cluster_secret:
+            headers[rest.AUTH_HEADER] = f"{rest.AUTH_SCHEME} {self.cluster_secret}"
+
+        conn = http.client.HTTPConnection(self.hostname, self.port, timeout=effective_timeout)
+        try:
+            conn.request(method, path, body=payload, headers=headers)
+            resp = conn.getresponse()
+            length = resp.getheader("Content-Length")
+            if length is not None and int(length) > self.max_message_size:
+                raise rest.MessageTooLargeError(
+                    f"Response of {length} bytes exceeds maximum {self.max_message_size} bytes"
                 )
-
-                send_message(self._sock, req_env, self.max_message_size)
-                resp_env = recv_message(
-                    self._sock,
-                    max_message_size=self.max_message_size,
-                    expected_protocol_version=CURRENT_PROTOCOL_VERSION,
+            raw = resp.read(self.max_message_size + 1)
+            if len(raw) > self.max_message_size:
+                raise rest.MessageTooLargeError(
+                    f"Response exceeds maximum {self.max_message_size} bytes"
                 )
-                return resp_env
+            status = resp.status
+        except socket.timeout as e:
+            raise WorkerConnectionTimeout(
+                f"Timeout talking to {self.base_url}{path}: {e}"
+            )
+        except rest.ProtocolError as e:
+            raise WorkerCommunicationError(f"Protocol error with {self.base_url}: {e}")
+        except (OSError, http.client.HTTPException) as e:
+            raise WorkerCommunicationError(f"Communication error with {self.base_url}: {e}")
+        finally:
+            conn.close()
 
-            except socket.timeout as e:
-                self.close()
-                raise WorkerConnectionTimeout(f"Timeout waiting for response from {self.hostname}:{self.port}")
-            except (ConnectionError, OSError, ProtocolError) as e:
-                self.close()
-                raise WorkerCommunicationError(f"Communication error with {self.hostname}:{self.port}: {e}")
+        try:
+            data = rest.decode_json(raw)
+        except rest.ProtocolError as e:
+            raise WorkerCommunicationError(
+                f"Invalid response from {self.base_url}{path} (HTTP {status}): {e}"
+            )
+
+        if status not in ok_statuses:
+            err = ErrorResponse.from_dict(data)
+            raise WorkerRequestError(
+                status, err.error_code or "HTTP_ERROR", err.error_message or f"HTTP {status}"
+            )
+        return status, data
+
+    def _get(self, path: str, cls: Type[M], query=None, timeout=None) -> M:
+        _, data = self.request("GET", path, query=query, timeout=timeout)
+        return cls.from_dict(data)
+
+    def _post(self, path: str, body, cls: Type[M], timeout=None, ok_statuses=(200, 201, 202)) -> M:
+        _, data = self.request("POST", path, body=body, timeout=timeout, ok_statuses=ok_statuses)
+        return cls.from_dict(data)
+
+    # ------------------------------------------------------------ endpoints
+
+    def get_status(self, timeout: Optional[float] = None) -> StatusResponse:
+        """GET /v1/status"""
+        return self._get(rest.STATUS_PATH, StatusResponse, timeout=timeout)
+
+    def get_resources(self, timeout: Optional[float] = None) -> ResourceResponse:
+        """GET /v1/resources"""
+        return self._get(rest.RESOURCES_PATH, ResourceResponse, timeout=timeout)
+
+    def get_cache_summary(
+        self, dataset_id: str, dataset_version: str, timeout: Optional[float] = None
+    ) -> CacheSummaryResponse:
+        """GET /v1/cache/summary"""
+        return self._get(
+            rest.CACHE_SUMMARY_PATH,
+            CacheSummaryResponse,
+            query={"dataset_id": dataset_id, "dataset_version": dataset_version},
+            timeout=timeout,
+        )
+
+    def get_cache_inventory(
+        self,
+        dataset_id: str,
+        dataset_version: str,
+        known_revision: int = 0,
+        page: int = 1,
+        page_size: int = 500,
+        timeout: Optional[float] = None,
+    ) -> CacheInventoryResponse:
+        """GET /v1/cache/inventory"""
+        return self._get(
+            rest.CACHE_INVENTORY_PATH,
+            CacheInventoryResponse,
+            query={
+                "dataset_id": dataset_id,
+                "dataset_version": dataset_version,
+                "known_revision": known_revision,
+                "page": page,
+                "page_size": page_size,
+            },
+            timeout=timeout,
+        )
+
+    def list_checkpoints(
+        self, checkpoint_dir: str = "", job_id: str = "", timeout: Optional[float] = None
+    ) -> CheckpointListResponse:
+        """GET /v1/checkpoints"""
+        query = {}
+        if checkpoint_dir:
+            query["checkpoint_dir"] = checkpoint_dir
+        if job_id:
+            query["job_id"] = job_id
+        return self._get(rest.CHECKPOINTS_PATH, CheckpointListResponse, query=query, timeout=timeout)
+
+    def submit_job(self, job: JobSubmit, timeout: Optional[float] = None) -> JobResponse:
+        """POST /v1/jobs -> 201 accepted, 409 rejected (both return a JobResponse)."""
+        return self._post(
+            rest.JOBS_PATH, job, JobResponse, timeout=timeout, ok_statuses=(200, 201, 409)
+        )
+
+    def get_job_status(self, job_id: str, timeout: Optional[float] = None) -> JobStatusResponse:
+        """GET /v1/jobs/{job_id}"""
+        return self._get(rest.job_path(job_id), JobStatusResponse, timeout=timeout)
+
+    def stop_job(
+        self, job_id: str, reason: str = "", graceful: bool = True, timeout: Optional[float] = None
+    ) -> StatusResponse:
+        """POST /v1/jobs/{job_id}/stop"""
+        body = JobStop(job_id=job_id, reason=reason, graceful=graceful)
+        return self._post(rest.job_stop_path(job_id), body, StatusResponse, timeout=timeout)
+
+    def shutdown(
+        self, reason: str = "", force: bool = False, timeout: Optional[float] = None
+    ) -> StatusResponse:
+        """POST /v1/shutdown"""
+        body = ShutdownRequest(reason=reason, force=force)
+        return self._post(rest.SHUTDOWN_PATH, body, StatusResponse, timeout=timeout)
 
     def close(self) -> None:
-        """Closes the active connection."""
-        if self._sock is not None:
-            try:
-                self._sock.shutdown(socket.SHUT_RDWR)
-            except Exception:
-                pass
-            try:
-                self._sock.close()
-            except Exception:
-                pass
-            self._sock = None
+        """No persistent connection is held; kept for API compatibility."""
+        return None
 
 
 class WorkerClientManager:

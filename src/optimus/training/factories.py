@@ -5,7 +5,7 @@ Workers never receive pickled objects or source code from the network. Instead, 
 controller sends *import paths* of the form ``"package.module:function"`` and each
 worker imports and calls them locally. A factory path is therefore only usable if the
 module is importable on every worker (installed in the worker's environment, or
-present under the worker daemon's working directory / ``PYTHONPATH``).
+present under optimusd's working directory / ``PYTHONPATH``).
 
 Contracts:
 
@@ -66,7 +66,7 @@ def resolve_factory(path: str) -> Callable[..., Any]:
         raise FactoryResolutionError(
             f"Cannot import module {module_name!r} for factory {path!r}: {e}. "
             "The module must be importable on every worker (installed, or under the "
-            "worker daemon's working directory / PYTHONPATH)."
+            "optimusd's working directory / PYTHONPATH)."
         ) from e
     for part in attr_path.split("."):
         try:

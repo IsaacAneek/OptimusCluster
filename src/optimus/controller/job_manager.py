@@ -21,9 +21,7 @@ from optimus.controller.scheduler import ScheduleResult, Scheduler
 from optimus.dataset import DatasetManifest
 from optimus.protocol.generated.messages_pb2 import (
     JobState,
-    JobStatusRequest,
     JobStatusResponse,
-    JobStop,
     WorkerState,
 )
 
@@ -208,26 +206,25 @@ class JobManager:
                     logger.error(f"Worker {node.hostname} failed consecutive probes (UNAVAILABLE)")
                     return False  # Trigger DDP group restart
 
-                # Query job status over TCP
+                # Query job status over the REST API
                 client = self.client_manager.get_client(node.hostname, node.port)
-                req = JobStatusRequest(job_id=record.job_id)
                 try:
-                    resp_env = client.send_request("job_status_request", req, timeout=2.0)
-                    if resp_env.WhichOneof("payload") == "job_status_response":
-                        status_resp: JobStatusResponse = resp_env.job_status_response
-                        if status_resp.status == JobState.JOB_FAILED:
-                            logger.error(
-                                f"Worker {node.hostname} reported job failure: {status_resp.error_message}"
-                            )
-                            return False
+                    status_resp: JobStatusResponse = client.get_job_status(
+                        record.job_id, timeout=2.0
+                    )
+                    if status_resp.status == JobState.JOB_FAILED:
+                        logger.error(
+                            f"Worker {node.hostname} reported job failure: {status_resp.error_message}"
+                        )
+                        return False
 
-                        if status_resp.status != JobState.JOB_COMPLETED:
-                            all_completed = False
+                    if status_resp.status != JobState.JOB_COMPLETED:
+                        all_completed = False
 
-                        if node.rank == 0:
-                            record.epoch = status_resp.epoch
-                            record.global_step = status_resp.global_step
-                            record.loss = status_resp.loss
+                    if node.rank == 0:
+                        record.epoch = status_resp.epoch
+                        record.global_step = status_resp.global_step
+                        record.loss = status_resp.loss
 
                 except Exception as ex:
                     logger.warning(f"Failed to query job status on {node.hostname}: {ex}")
@@ -238,7 +235,7 @@ class JobManager:
                 return True
 
     def _stop_ddp_group(self, record: JobRecord) -> None:
-        """Sends JobStop to all assigned nodes to cleanly terminate lingering processes."""
+        """Calls POST /v1/jobs/{job_id}/stop on all assigned nodes to cleanly terminate lingering processes."""
         if not record.selected_nodes:
             return
         for node_info in record.selected_nodes:
@@ -246,8 +243,9 @@ class JobManager:
                 client = self.client_manager.get_client(
                     node_info["hostname"], node_info.get("port", 45870)
                 )
-                req = JobStop(job_id=record.job_id, reason="Failure recovery restart", graceful=False)
-                client.send_request("job_stop", req, timeout=2.0)
+                client.stop_job(
+                    record.job_id, reason="Failure recovery restart", graceful=False, timeout=2.0
+                )
             except Exception:
                 pass
 
