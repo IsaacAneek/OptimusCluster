@@ -351,12 +351,15 @@ dataset = Dataset(
 model = resnet18(weights=None, num_classes=2)
 optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
 
-# 4. Initialize managed Trainer
+# 4. Initialize managed Trainer. Workers rebuild the model by importing
+#    model_factory ("module:function"); it must be importable on every worker.
 trainer = Trainer(
     cluster=cluster,
     model=model,
     dataset=dataset,
     optimizer=optimizer,
+    model_factory="torchvision.models:resnet18",
+    model_kwargs={"num_classes": 2},
     epochs=3,
     workers=2,
     batch_size=16
@@ -371,6 +374,24 @@ if os.path.isfile(metrics["final_model_path"]):
     model.load_state_dict(torch.load(metrics["final_model_path"], map_location="cpu"))
     print("Final model state successfully loaded into local model!")
 ```
+
+### 9.1 Model & Dataset Factories
+
+Workers never receive pickled objects or code over the network. `Trainer` sends **import paths**
+(`"package.module:function"`) plus JSON kwargs, and each worker imports and calls them locally
+(`src/optimus/training/factories.py`). Adding a new model or dataset therefore never requires
+editing `src/optimus`: put the factories in any module importable on the workers (e.g. under the
+repo root, which is the worker daemon's working directory) and pass their paths.
+
+| Argument | Contract | Default |
+|---|---|---|
+| `model_factory` | `fn(**model_kwargs) -> nn.Module`; `num_classes` is filled in if the function accepts it | required unless `model` is a torchvision ResNet (deprecated) or has `model_name` |
+| `dataset_factory` | `fn(data_dir, **dataset_kwargs) -> torch Dataset`; `data_dir` is the worker's dataset copy or `None` | ImageFolder if class folders exist, else synthetic tensors |
+| `model_kwargs` / `dataset_kwargs` | JSON-serializable dicts | `{}` |
+
+Factories may also be passed as module-level callables; `Trainer` converts them to import paths
+(functions defined in the `__main__` script are rejected, since workers cannot import them).
+See `example/cifar10.py` and `example/train_cifar10.py` for a complete custom model + dataset.
 
 ---
 
@@ -560,6 +581,7 @@ optimus/
 |       |   |-- ddp.py           # Gloo process group setup & auto interface binding
 |       |   |-- sampler.py       # DistributedSampler wrapper
 |       |   |-- worker_entry.py  # Worker DDP training entrypoint
+|       |   |-- factories.py     # Import-path model/dataset factory resolution
 |       |
 |       |-- dashboard/
 |           |-- app.py           # FastAPI application & checkpoint verification API
@@ -569,6 +591,8 @@ optimus/
 |-- example/
 |   |-- example_dataset.py       # Synthetic dataset builder
 |   |-- train_resnet.py          # End-to-end ResNet training
+|   |-- cifar10.py               # CIFAR-10 ConvNet + dataset factories
+|   |-- train_cifar10.py         # CIFAR-10 training via custom factories
 |   |-- evaluate_performance.py  # I/O & scaling benchmark
 |   |-- config.yaml              # Local test configuration
 |

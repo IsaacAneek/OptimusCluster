@@ -51,6 +51,8 @@ def main():
         model=model,
         dataset=dataset,
         optimizer=optimizer,
+        model_factory="torchvision.models:resnet18",
+        model_kwargs={"num_classes": 2},
         epochs=3,
         workers=2,
         batch_size=16,

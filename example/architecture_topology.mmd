@@ -1,0 +1,53 @@
+flowchart TD
+    subgraph ControllerHost["CONTROLLER WORKSTATION (isaac.local / 192.168.10.127)"]
+        UserCode["User Training Script\n(example/train_cifar10.py)"]
+        ConfigYAML["Config File\n(config.yaml)"]
+        OptimusEngine["Optimus SDK & Trainer\n(src/optimus/trainer.py)"]
+        DiscoveryMgr["NodeDiscoveryManager\n(Avahi mDNS / Nmap)"]
+        Launcher["DDPLauncher\n(TCP Dispatcher)"]
+        NFSServer["NFS Dataset Origin\n(/srv/datasets/cifar10/v1)"]
+        CheckpointsStorage["Authoritative Checkpoints\n(/srv/checkpoints)"]
+        
+        ConfigYAML --> OptimusEngine
+        UserCode --> OptimusEngine
+        OptimusEngine --> DiscoveryMgr
+        OptimusEngine --> Launcher
+    end
+
+    subgraph Pi02Host["WORKER NODE 1 (pi02.local / 192.168.10.150)"]
+        Daemon02["optimus-worker.service\n(TCP Listener :45870)"]
+        Exec02["TrainingExecutor\n(Subprocess Manager)"]
+        Subproc02["worker_entry.py (Rank 0)\nMASTER_ADDR=192.168.10.150\nMASTER_PORT=29500"]
+        GlooServer["Gloo TCPStore Server\n(:29500)"]
+        NFSMount02["NFS Mount\n(/mnt/nfs-origin)"]
+
+        Daemon02 --> Exec02
+        Exec02 -->|"spawns with env"| Subproc02
+        Subproc02 --- GlooServer
+        NFSMount02 -.->|"reads samples"| Subproc02
+    end
+
+    subgraph Pi03Host["WORKER NODE 2 (pi03.local / 192.168.10.101)"]
+        Daemon03["optimus-worker.service\n(TCP Listener :45870)"]
+        Exec03["TrainingExecutor\n(Subprocess Manager)"]
+        Subproc03["worker_entry.py (Rank 1)\nMASTER_ADDR=192.168.10.150\nMASTER_PORT=29500"]
+        NFSMount03["NFS Mount\n(/mnt/nfs-origin)"]
+
+        Daemon03 --> Exec03
+        Exec03 -->|"spawns with env"| Subproc03
+        NFSMount03 -.->|"reads samples"| Subproc03
+    end
+
+    %% Network Connections
+    DiscoveryMgr -->|"1. mDNS resolve & TCP probes"| Daemon02
+    DiscoveryMgr -->|"1. mDNS resolve & TCP probes"| Daemon03
+
+    Launcher -->|"2. TCP :45870 JobSubmit (rank 0)"| Daemon02
+    Launcher -->|"2. TCP :45870 JobSubmit (rank 1)"| Daemon03
+
+    Subproc03 ==>|"3. TCP :29500 Gloo Rendezvous Connect"| GlooServer
+    Subproc02 <===>|"4. Gloo Ring-AllReduce Gradient Sync (Ethernet)"| Subproc03
+
+    NFSServer -.->|"NFS Export"| NFSMount02
+    NFSServer -.->|"NFS Export"| NFSMount03
+    Subproc02 -.->|"Saves final_model.pt"| CheckpointsStorage

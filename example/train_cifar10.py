@@ -9,18 +9,17 @@ Automatically checks for and downloads CIFAR-10 if not present locally.
 
 import argparse
 import os
+import sys
 import tarfile
 import urllib.request
 import torch
-import torch.nn as nn
 import torch.optim as optim
 
-from optimus import Dataset, Optimus, Trainer
+# Allow both `python example/train_cifar10.py` and `python -m example.train_cifar10`.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-CIFAR10_CLASSES = [
-    "airplane", "automobile", "bird", "cat", "deer",
-    "dog", "frog", "horse", "ship", "truck"
-]
+from example.cifar10 import CIFAR10_CLASSES, build_model  # noqa: E402
+from optimus import Dataset, Optimus, Trainer  # noqa: E402
 
 FASTAI_CIFAR10_URL = "https://s3.amazonaws.com/fast-ai-imageclas/cifar10.tgz"
 
@@ -95,50 +94,6 @@ def ensure_cifar10_dataset(
     return output_dir
 
 
-class CIFAR10ConvNet(nn.Module):
-    """
-    4-Layer Convolutional Neural Network designed specifically for 32x32 RGB CIFAR-10
-    image classification on edge CPU hardware (Raspberry Pi 5 Cortex-A76).
-    """
-
-    def __init__(self, num_classes: int = 10):
-        super().__init__()
-        self.num_classes = num_classes
-
-        # Feature extractor: 3 stages of Conv -> BatchNorm -> ReLU -> MaxPool
-        self.features = nn.Sequential(
-            # Stage 1: 3x32x32 -> 32x16x16
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            # Stage 2: 32x16x16 -> 64x8x8
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            # Stage 3: 64x8x8 -> 128x4x4
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-        )
-
-        # Classification head
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(128 * 4 * 4, 128),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
-            nn.Linear(128, num_classes),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.classifier(self.features(x))
-
-
 def main():
     parser = argparse.ArgumentParser(description="Optimus CIFAR-10 Distributed CNN Training")
     parser.add_argument("--config", type=str, default="config.yaml", help="Path to config.yaml")
@@ -170,7 +125,7 @@ def main():
     )
 
     # 4. Construct the custom CIFAR-10 CNN model and optimizer
-    model = CIFAR10ConvNet(num_classes=10)
+    model = build_model(num_classes=10)
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1e-4)
 
     # Count parameters
@@ -178,11 +133,16 @@ def main():
     print(f"Model Architecture: CIFAR10ConvNet ({total_params:,} trainable parameters)")
 
     # 5. Initialize the managed Trainer
+    # Workers rebuild the model and dataset by importing these factories; nothing in
+    # src/optimus needs to know about CIFAR-10.
     trainer = Trainer(
         cluster=cluster,
         model=model,
         dataset=dataset,
         optimizer=optimizer,
+        model_factory="example.cifar10:build_model",
+        dataset_factory="example.cifar10:build_dataset",
+        model_kwargs={"num_classes": 10},
         epochs=args.epochs,
         workers=args.workers,
         batch_size=args.batch_size,
