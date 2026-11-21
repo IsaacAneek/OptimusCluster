@@ -1,399 +1,307 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="en" data-theme="light">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Optimus Cluster Dashboard</title>
-    <link rel="stylesheet" href="/static/style.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Optimus Cluster Dashboard</title>
+  <link rel="stylesheet" href="/static/vendor/pico.min.css">
+  <link rel="stylesheet" href="/static/theme.css">
+  <link rel="preload" href="/static/vendor/fonts/ibm-plex-sans-400.woff2" as="font" type="font/woff2" crossorigin>
+  <!-- app.js must register the component before Alpine boots -->
+  <script defer src="/static/app.js"></script>
+  <script defer src="/static/vendor/alpine.min.js"></script>
 </head>
-<body class="app-body">
-    <!-- Claude.ai UI Shell: Left Sidebar + Main Content -->
-    <div class="app-layout">
-        <!-- Sidebar Navigation -->
-        <aside class="sidebar">
-            <div class="sidebar-header">
-                <div class="brand">
-                    <span class="brand-badge"></span>
-                    <span class="brand-name">Optimus</span>
-                </div>
-                <div class="brand-sub">Distributed ML Platform</div>
-            </div>
+<body x-data="dashboard" x-cloak>
 
-            <nav class="sidebar-nav">
-                <button class="nav-item active" data-view="view-overview">
-                    <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h3A1.5 1.5 0 0 1 7 2.5v3A1.5 1.5 0 0 1 5.5 7h-3A1.5 1.5 0 0 1 1 5.5v-3zm8 0A1.5 1.5 0 0 1 10.5 1h3A1.5 1.5 0 0 1 15 2.5v3A1.5 1.5 0 0 1 13.5 7h-3A1.5 1.5 0 0 1 9 5.5v-3zm-8 8A1.5 1.5 0 0 1 2.5 9h3A1.5 1.5 0 0 1 7 10.5v3A1.5 1.5 0 0 1 5.5 15h-3A1.5 1.5 0 0 1 1 13.5v-3zm8 0A1.5 1.5 0 0 1 10.5 9h3a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-3A1.5 1.5 0 0 1 9 13.5v-3z"/></svg>
-                    <span>Overview</span>
-                </button>
-                <button class="nav-item" data-view="view-discovery">
-                    <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zm0 2a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zm0 2a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z"/></svg>
-                    <span>LAN Discovery</span>
-                </button>
-                <button class="nav-item" data-view="view-workers">
-                    <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V3zm0 8a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-2z"/></svg>
-                    <span>Workers</span>
-                </button>
-                <button class="nav-item" data-view="view-scheduler">
-                    <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5zM1 4v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4H1z"/></svg>
-                    <span>Scheduler</span>
-                </button>
-                <button class="nav-item" data-view="view-jobs">
-                    <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M4 11a1 1 0 1 1 2 0v1a1 1 0 1 1-2 0v-1zm3-4a1 1 0 1 1 2 0v5a1 1 0 1 1-2 0V7zm3-4a1 1 0 1 1 2 0v9a1 1 0 1 1-2 0V3z"/></svg>
-                    <span>Training Jobs</span>
-                </button>
-                <button class="nav-item" data-view="view-cache">
-                    <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.828c.885-.37 2.154-.769 3.388-.893 1.33-.134 2.458.063 3.112.752v9.746c-.935-.53-2.12-.603-3.213-.493-1.18.12-2.37.461-3.287.811V2.828zm7.5-.141c.654-.689 1.782-.886 3.112-.752 1.234.124 2.503.523 3.388.893v10.746c-.917-.35-2.107-.692-3.287-.81-1.094-.111-2.278-.039-3.213.492V2.687z"/></svg>
-                    <span>Dataset Cache</span>
-                </button>
-                <button class="nav-item" data-view="view-checkpoints">
-                    <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H2zm1 2h10v2H3V3zm0 4h10v2H3V7zm0 4h10v2H3v-2z"/></svg>
-                    <span>Checkpoints</span>
-                </button>
-            </nav>
+  <header class="shell-header">
+    <span class="brand">Optimus<span>Distributed ML Platform</span></span>
+    <span class="spacer"></span>
+    <span class="status" :class="{ off: online === 0 }"
+          x-text="online ? `${online} node${online > 1 ? 's' : ''} online` : 'No workers online'"></span>
+  </header>
 
-            <div class="sidebar-footer">
-                <div class="footer-card">
-                    <div class="footer-label">Controller</div>
-                    <div id="sidebar-controller" class="footer-value">-</div>
-                    <div class="footer-label mt-1">Subnet</div>
-                    <div id="sidebar-subnet" class="footer-value">-</div>
-                </div>
-            </div>
-        </aside>
+  <nav class="shell-nav" aria-label="Sections">
+    <ul>
+      <template x-for="v in views" :key="v.id">
+        <li>
+          <button type="button" @click="go(v.id)" :aria-current="view === v.id ? 'page' : null" x-text="v.label"></button>
+        </li>
+      </template>
+    </ul>
+    <dl class="meta">
+      <dt>Controller</dt><dd x-text="overview.controller_hostname || '-'"></dd>
+      <dt>Subnet</dt><dd x-text="overview.subnet || '-'"></dd>
+    </dl>
+  </nav>
 
-        <!-- Main Workspace -->
-        <div class="main-wrapper">
-            <!-- Top App Header -->
-            <header class="top-header">
-                <div class="header-left">
-                    <h1 id="page-title" class="page-title">Overview</h1>
-                    <span id="cluster-status-pill" class="pill pill-primary">Cluster Ready</span>
-                </div>
-                <div class="header-right">
-                    <button id="btn-scan-lan" class="btn btn-secondary">Scan LAN Subnet</button>
-                    <button id="btn-refresh" class="btn btn-primary">Refresh Probes</button>
-                </div>
-            </header>
-
-            <!-- Scrollable Content Canvas -->
-            <main class="content-canvas">
-                <!-- VIEW 1: OVERVIEW -->
-                <div id="view-overview" class="tab-view active">
-                    <section class="section">
-                        <div class="section-header">
-                            <h2 class="section-title">Cluster Overview</h2>
-                        </div>
-                        <div class="grid grid-6">
-                            <div class="card card-important">
-                                <div class="card-label">Available Workers</div>
-                                <div id="val-available" class="card-value text-primary">-</div>
-                            </div>
-                            <div class="card">
-                                <div class="card-label">Busy Workers</div>
-                                <div id="val-busy" class="card-value">-</div>
-                            </div>
-                            <div class="card">
-                                <div class="card-label">Unavailable Workers</div>
-                                <div id="val-unavailable" class="card-value">-</div>
-                            </div>
-                            <div class="card card-important">
-                                <div class="card-label">Active Jobs</div>
-                                <div id="val-jobs" class="card-value text-primary">-</div>
-                            </div>
-                            <div class="card">
-                                <div class="card-label">Total Cached Data</div>
-                                <div id="val-cached" class="card-value">-</div>
-                            </div>
-                            <div class="card card-important">
-                                <div class="card-label">Saved Checkpoints</div>
-                                <div id="val-checkpoints" class="card-value text-primary">-</div>
-                            </div>
-                        </div>
-                    </section>
-
-                    <section class="section">
-                        <div class="section-header">
-                            <h2 class="section-title">Worker Node Telemetry</h2>
-                        </div>
-                        <div class="table-container card">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>Worker ID</th>
-                                        <th>Hostname</th>
-                                        <th>Status</th>
-                                        <th>CPU %</th>
-                                        <th>Available RAM</th>
-                                        <th>Cache Disk</th>
-                                        <th>Temperature</th>
-                                        <th>Jobs</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="overview-workers-body">
-                                    <tr><td colspan="8" class="text-muted">Loading worker nodes...</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </section>
-                </div>
-
-                <!-- VIEW 2: LAN DISCOVERY (NMAP & AVAHI) -->
-                <div id="view-discovery" class="tab-view">
-                    <section class="section">
-                        <div class="section-header flex-between">
-                            <div>
-                                <h2 class="section-title">LAN Topology Discovery</h2>
-                                <p class="section-desc">Identifies all live hosts, hostnames, and active Optimus worker nodes on the local subnet using Nmap ping sweep and Avahi mDNS resolution.</p>
-                            </div>
-                            <button id="btn-trigger-scan" class="btn btn-primary">Run Subnet Sweep</button>
-                        </div>
-                        <div class="table-container card">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>IP Address</th>
-                                        <th>mDNS Hostname</th>
-                                        <th>Entity Classification</th>
-                                        <th>Optimus Worker</th>
-                                        <th>Worker ID</th>
-                                        <th>Worker Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="discovery-body">
-                                    <tr><td colspan="6" class="text-muted">Loading LAN topology...</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </section>
-                </div>
-
-                <!-- VIEW 3: WORKERS -->
-                <div id="view-workers" class="tab-view">
-                    <section class="section">
-                        <div class="section-header">
-                            <h2 class="section-title">Configured Cluster Workers</h2>
-                            <p class="section-desc">Live resource and availability metrics collected via controller-initiated passive probing over TCP port 45870.</p>
-                        </div>
-                        <div class="table-container card">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>Worker ID</th>
-                                        <th>Hostname</th>
-                                        <th>Port</th>
-                                        <th>Status</th>
-                                        <th>CPU Load</th>
-                                        <th>RAM (Avail / Total)</th>
-                                        <th>Disk Capacity</th>
-                                        <th>Thermals</th>
-                                        <th>Failures</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="workers-body">
-                                    <tr><td colspan="9" class="text-muted">Loading workers...</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </section>
-                </div>
-
-                <!-- VIEW 4: SCHEDULER -->
-                <div id="view-scheduler" class="tab-view">
-                    <section class="section">
-                        <div class="section-header">
-                            <h2 class="section-title">Locality-Aware Scheduler</h2>
-                            <p class="section-desc">Executes identical weighted rank selection algorithm across dataset locality, RAM, CPU, and thermals.</p>
-                        </div>
-                        <div class="card card-important mb-3">
-                            <form id="schedule-form" class="schedule-form">
-                                <div class="form-group">
-                                    <label for="sched-dataset">Dataset ID</label>
-                                    <input type="text" id="sched-dataset" name="dataset_id" value="animals" required>
-                                </div>
-                                <div class="form-group">
-                                    <label for="sched-version">Version</label>
-                                    <input type="text" id="sched-version" name="dataset_version" value="v1" required>
-                                </div>
-                                <div class="form-group">
-                                    <label for="sched-workers">Worker Count</label>
-                                    <input type="number" id="sched-workers" name="workers" value="2" min="1" max="16" required>
-                                </div>
-                                <div class="form-group align-end">
-                                    <button type="submit" id="btn-schedule" class="btn btn-primary">Schedule Ranks</button>
-                                </div>
-                            </form>
-                        </div>
-
-                        <div id="schedule-result" class="schedule-result hidden card">
-                            <h3 class="subsection-title">Scheduled Rank Allocations (<span id="res-job-id"></span>)</h3>
-                            <div class="table-container mt-2">
-                                <table class="table">
-                                    <thead>
-                                        <tr>
-                                            <th>Rank</th>
-                                            <th>Hostname</th>
-                                            <th>Worker ID</th>
-                                            <th>Weighted Score</th>
-                                            <th>Dataset Locality</th>
-                                            <th>Cached Bytes</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="schedule-ranks-body"></tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </section>
-                </div>
-
-                <!-- VIEW 5: TRAINING JOBS -->
-                <div id="view-jobs" class="tab-view">
-                    <section class="section">
-                        <div class="section-header">
-                            <h2 class="section-title">Distributed Training Jobs</h2>
-                            <p class="section-desc">Monitors PyTorch DDP Gloo processes, epoch steps, loss convergence, and fail-stop recovery restarts.</p>
-                        </div>
-                        <div class="table-container card">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>Job ID</th>
-                                        <th>Dataset</th>
-                                        <th>Status</th>
-                                        <th>World Size</th>
-                                        <th>Epoch</th>
-                                        <th>Step</th>
-                                        <th>Loss</th>
-                                        <th>Restarts</th>
-                                        <th>Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="jobs-body">
-                                    <tr><td colspan="9" class="text-muted">No training jobs recorded</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </section>
-                </div>
-
-                <!-- VIEW 6: DATASET CACHE -->
-                <div id="view-cache" class="tab-view">
-                    <section class="section">
-                        <div class="section-header">
-                            <h2 class="section-title">Worker Dataset Cache Inventory</h2>
-                            <p class="section-desc">Per-node local cache inventory, SHA-256 verification metrics, and hit/miss statistics.</p>
-                        </div>
-                        <div class="table-container card">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>Worker Node</th>
-                                        <th>Dataset</th>
-                                        <th>Version</th>
-                                        <th>Cached Files</th>
-                                        <th>Cached Data</th>
-                                        <th>Cache Hits</th>
-                                        <th>Cache Misses</th>
-                                        <th>Downloaded</th>
-                                        <th>Revision</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="cache-body">
-                                    <tr><td colspan="9" class="text-muted">Loading cache summaries...</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </section>
-                </div>
-
-                <!-- VIEW 7: CHECKPOINTS -->
-                <div id="view-checkpoints" class="tab-view">
-                    <section class="section">
-                        <div class="section-header flex-between">
-                            <div>
-                                <h2 class="section-title">Saved Node Checkpoints & Artifacts</h2>
-                                <p class="section-desc">Atomic model weights, optimizer states, and metadata committed per epoch. Displays storage, locality, and verification status across cluster nodes.</p>
-                            </div>
-                            <button id="btn-refresh-checkpoints" class="btn btn-primary">Refresh Checkpoints</button>
-                        </div>
-
-                        <!-- Checkpoint summary stats -->
-                        <div class="grid grid-4 mb-3">
-                            <div class="card card-important">
-                                <div class="card-label">Total Checkpoints</div>
-                                <div id="ckpt-total-count" class="card-value text-primary">-</div>
-                            </div>
-                            <div class="card">
-                                <div class="card-label">Total Storage Footprint</div>
-                                <div id="ckpt-total-size" class="card-value">-</div>
-                            </div>
-                            <div class="card card-important">
-                                <div class="card-label">Node Mount Status</div>
-                                <div id="ckpt-nodes-accessible" class="card-value text-primary">-</div>
-                            </div>
-                            <div class="card">
-                                <div class="card-label">Latest Checkpoint</div>
-                                <div id="ckpt-latest-info" class="card-value font-mono">-</div>
-                            </div>
-                        </div>
-
-                        <!-- Node verification strip -->
-                        <div class="subsection-header mb-2">
-                            <h3 class="subsection-title">Node Storage & Mount Verification</h3>
-                        </div>
-                        <div id="node-checkpoints-grid" class="node-cards-grid mb-3">
-                            <!-- Populated dynamically: Cards for pi02.local, pi03.local, isaac.local -->
-                        </div>
-
-                        <!-- Filter and Checkpoints Table -->
-                        <div class="section-header flex-between mt-4">
-                            <div class="flex-row gap-2">
-                                <h3 class="subsection-title">Committed Checkpoint Inventory</h3>
-                                <div id="ckpt-filter-bar" class="filter-bar">
-                                    <button class="filter-btn active" data-node="">All Nodes</button>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="table-container card">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>Job ID</th>
-                                        <th>Checkpoint</th>
-                                        <th>Epoch</th>
-                                        <th>Global Step</th>
-                                        <th>Loss</th>
-                                        <th>Origin (Saved By)</th>
-                                        <th>Verified on Nodes</th>
-                                        <th>Model Size</th>
-                                        <th>Created</th>
-                                        <th>Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="checkpoints-body">
-                                    <tr><td colspan="10" class="text-muted">Loading saved checkpoints...</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
-
-                        <!-- Inspect metadata card -->
-                        <div id="checkpoint-detail-card" class="card card-important mt-3 hidden">
-                            <div class="flex-between">
-                                <h3 class="subsection-title">Checkpoint Details: <span id="detail-ckpt-name" class="font-mono text-primary"></span></h3>
-                                <button id="btn-close-detail" class="btn btn-secondary btn-sm">Close</button>
-                            </div>
-                            <div class="grid grid-3 mt-2 mb-2">
-                                <div><strong>Directory:</strong> <span id="detail-ckpt-path" class="font-mono text-muted"></span></div>
-                                <div><strong>Dataset:</strong> <span id="detail-ckpt-dataset" class="font-mono"></span></div>
-                                <div><strong>Saved Artifacts:</strong> <span id="detail-ckpt-files" class="font-mono"></span></div>
-                            </div>
-                            <pre id="detail-ckpt-json" class="code-block"></pre>
-                        </div>
-                    </section>
-                </div>
-            </main>
-        </div>
+  <main class="shell-main">
+    <div class="page-head">
+      <h1 x-text="title"></h1>
+      <div class="actions">
+        <button type="button" class="secondary" @click="scan()" :disabled="!!busy.scan" x-text="busy.scan ? 'Scanning…' : 'Scan LAN Subnet'"></button>
+        <button type="button" @click="probe()" :disabled="!!busy.probe" x-text="busy.probe ? 'Probing…' : 'Refresh Probes'"></button>
+      </div>
     </div>
 
-    <script src="/static/main.js"></script>
+    <!-- OVERVIEW -->
+    <section x-show="view === 'overview'">
+      <div class="tiles">
+        <div class="tile"><div class="label">Available workers</div><div class="value accent" x-text="overview.available_workers ?? '-'"></div></div>
+        <div class="tile"><div class="label">Busy workers</div><div class="value" x-text="overview.busy_workers ?? '-'"></div></div>
+        <div class="tile"><div class="label">Unavailable workers</div><div class="value" x-text="overview.unavailable_workers ?? '-'"></div></div>
+        <div class="tile"><div class="label">Active jobs</div><div class="value accent" x-text="overview.active_jobs ?? '-'"></div></div>
+        <div class="tile"><div class="label">Total cached data</div><div class="value" x-text="mb(overview.total_cached_bytes)"></div></div>
+        <div class="tile"><div class="label">Saved checkpoints</div><div class="value accent" x-text="overview.total_checkpoints ?? '-'"></div></div>
+      </div>
+
+      <h2>Worker node telemetry</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Worker ID</th><th>Hostname</th><th>Status</th><th>CPU</th><th>RAM (free / total)</th><th>Cache disk free</th><th>Temp</th><th>Jobs</th></tr></thead>
+          <tbody>
+            <template x-for="w in workers" :key="w.hostname + w.port">
+              <tr>
+                <td><strong x-text="w.worker_id"></strong></td>
+                <td x-text="w.hostname"></td>
+                <td><span class="tag" :class="{ on: healthy(w.status) }" x-text="w.status"></span></td>
+                <td x-text="w.cpu_percent.toFixed(1) + '%'"></td>
+                <td x-text="`${w.ram_available_mb} / ${w.ram_total_mb} MB`"></td>
+                <td x-text="w.cache_disk_available_gb + ' GB'"></td>
+                <td x-text="temp(w)"></td>
+                <td x-text="w.active_jobs"></td>
+              </tr>
+            </template>
+            <tr x-show="!workers.length"><td class="empty" colspan="8">No worker nodes registered</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- LAN DISCOVERY -->
+    <section x-show="view === 'discovery'">
+      <div class="page-head">
+        <p>Live hosts, mDNS names and optimusd worker nodes on the subnet, from an Nmap ping sweep and Avahi resolution.</p>
+        <button type="button" @click="scan()" :disabled="!!busy.scan" x-text="busy.scan ? 'Scanning subnet…' : 'Run subnet sweep'"></button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>IP address</th><th>mDNS hostname</th><th>Entity</th><th>Optimus worker</th><th>Worker ID</th><th>Status</th></tr></thead>
+          <tbody>
+            <template x-for="h in hosts" :key="h.ip">
+              <tr>
+                <td><strong x-text="h.ip"></strong></td>
+                <td x-text="h.hostname"></td>
+                <td x-text="entity(h)"></td>
+                <td><span class="tag" :class="{ on: h.is_optimus_worker }" x-text="h.is_optimus_worker ? 'YES' : 'No'"></span></td>
+                <td x-text="h.worker_id || '-'"></td>
+                <td><span x-show="!h.status" class="muted">-</span><span x-show="h.status" class="tag" :class="{ on: healthy(h.status) }" x-text="h.status"></span></td>
+              </tr>
+            </template>
+            <tr x-show="!hosts.length"><td class="empty" colspan="6">No scan results yet. Run a subnet sweep.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- WORKERS -->
+    <section x-show="view === 'workers'">
+      <div class="page-head"><p>Live metrics collected by the controller from each optimusd REST API (<code>GET /v1/resources</code>, port 45870).</p></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Worker ID</th><th>Hostname</th><th>Port</th><th>Status</th><th>CPU load</th><th>RAM (free / total)</th><th>Cache disk free</th><th>Thermals</th><th>Failures</th></tr></thead>
+          <tbody>
+            <template x-for="w in workers" :key="w.hostname + w.port">
+              <tr>
+                <td><strong x-text="w.worker_id"></strong></td>
+                <td x-text="w.hostname"></td>
+                <td x-text="w.port"></td>
+                <td><span class="tag" :class="{ on: healthy(w.status) }" x-text="w.status"></span></td>
+                <td x-text="w.cpu_percent.toFixed(1) + '%'"></td>
+                <td x-text="`${w.ram_available_mb} / ${w.ram_total_mb} MB`"></td>
+                <td x-text="w.cache_disk_available_gb + ' GB'"></td>
+                <td x-text="temp(w)"></td>
+                <td x-text="w.consecutive_failures"></td>
+              </tr>
+            </template>
+            <tr x-show="!workers.length"><td class="empty" colspan="9">No worker nodes registered</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- SCHEDULER -->
+    <section x-show="view === 'scheduler'">
+      <div class="page-head"><p>Weighted rank selection across dataset locality, RAM, CPU and thermals. Identical to the SDK scheduler.</p></div>
+      <div class="panel key">
+        <form class="inline" @submit.prevent="submitSchedule()">
+          <label>Dataset ID<input type="text" x-model="schedule.dataset_id" required></label>
+          <label>Version<input type="text" x-model="schedule.dataset_version" required></label>
+          <label>Worker count<input type="number" x-model="schedule.workers" min="1" max="16" required></label>
+          <button type="submit" :disabled="!!busy.schedule" x-text="busy.schedule ? 'Computing locality…' : 'Schedule ranks'"></button>
+        </form>
+      </div>
+      <template x-if="scheduleResult">
+        <div>
+          <h2>Scheduled rank allocations <span class="mono accent" x-text="scheduleResult.job_id"></span></h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Rank</th><th>Hostname</th><th>Worker ID</th><th>Score</th><th>Dataset locality</th><th>Cached</th></tr></thead>
+              <tbody>
+                <template x-for="r in scheduleResult.ranks" :key="r.rank">
+                  <tr>
+                    <td><strong x-text="'Rank ' + r.rank"></strong></td>
+                    <td x-text="r.hostname"></td>
+                    <td x-text="r.worker_id"></td>
+                    <td><strong x-text="r.score.toFixed(3)"></strong></td>
+                    <td x-text="(r.locality * 100).toFixed(1) + '%'"></td>
+                    <td x-text="mb(r.cached_bytes)"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </template>
+    </section>
+
+    <!-- JOBS -->
+    <section x-show="view === 'jobs'">
+      <div class="page-head"><p>PyTorch DDP (Gloo) processes, epochs, loss and fail-stop restarts.</p></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Job ID</th><th>Dataset</th><th>Status</th><th>World size</th><th>Epoch</th><th>Step</th><th>Loss</th><th>Restarts</th><th></th></tr></thead>
+          <tbody>
+            <template x-for="j in jobs" :key="j.job_id">
+              <tr>
+                <td class="mono"><strong x-text="j.job_id"></strong></td>
+                <td x-text="`${j.dataset_id}:${j.dataset_version}`"></td>
+                <td><span class="tag" :class="{ on: healthy(j.status) }" x-text="j.status"></span></td>
+                <td x-text="j.world_size"></td>
+                <td x-text="j.epoch"></td>
+                <td x-text="j.global_step"></td>
+                <td x-text="j.loss"></td>
+                <td x-text="j.restarts"></td>
+                <td><button type="button" class="secondary sm" x-show="j.status === 'JOB_RUNNING'" @click="stopJob(j.job_id)">Stop</button></td>
+              </tr>
+            </template>
+            <tr x-show="!jobs.length"><td class="empty" colspan="9">No training jobs recorded</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- CACHE -->
+    <section x-show="view === 'cache'">
+      <div class="page-head"><p>Per-node cache inventory, SHA-256 verification and hit/miss counters.</p></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Worker node</th><th>Dataset</th><th>Version</th><th>Files</th><th>Cached</th><th>Hits</th><th>Misses</th><th>Downloaded</th><th>Revision</th></tr></thead>
+          <tbody>
+            <template x-for="c in cache" :key="c.hostname + c.dataset_id + c.version">
+              <tr>
+                <td><strong x-text="c.hostname"></strong></td>
+                <td x-text="c.dataset_id"></td>
+                <td x-text="c.version"></td>
+                <template x-if="c.error"><td colspan="6" class="muted" x-text="'Error: ' + c.error"></td></template>
+                <template x-if="!c.error">
+                  <td x-text="c.cached_files"></td>
+                </template>
+                <template x-if="!c.error"><td x-text="mb(c.cached_bytes, 2)"></td></template>
+                <template x-if="!c.error"><td><strong x-text="c.cache_hits"></strong></td></template>
+                <template x-if="!c.error"><td x-text="c.cache_misses"></td></template>
+                <template x-if="!c.error"><td x-text="mb(c.downloaded_bytes, 2)"></td></template>
+                <template x-if="!c.error"><td x-text="'rev.' + c.revision"></td></template>
+              </tr>
+            </template>
+            <tr x-show="!cache.length"><td class="empty" colspan="9">No cache records found</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- CHECKPOINTS -->
+    <section x-show="view === 'checkpoints'">
+      <div class="page-head">
+        <p>Atomic model weights and metadata committed per epoch, verified across every node.</p>
+        <button type="button" @click="loadCheckpoints()" :disabled="!!busy.ckpt" x-text="busy.ckpt ? 'Refreshing…' : 'Refresh checkpoints'"></button>
+      </div>
+
+      <div class="tiles">
+        <div class="tile"><div class="label">Total checkpoints</div><div class="value accent" x-text="ckpt.summary.total_checkpoints ?? '-'"></div></div>
+        <div class="tile"><div class="label">Storage footprint</div><div class="value" x-text="(ckpt.summary.total_size_mb ?? 0) + ' MB'"></div></div>
+        <div class="tile"><div class="label">Nodes mounted</div><div class="value accent" x-text="`${ckpt.summary.nodes_accessible_count ?? 0} / ${ckpt.summary.nodes_count ?? 0}`"></div></div>
+        <div class="tile"><div class="label">Latest checkpoint</div>
+          <div class="value small" x-text="ckpt.summary.latest_job ? `${ckpt.summary.latest_job} (${ckpt.summary.latest_checkpoint})` : '-'"></div></div>
+      </div>
+
+      <h2>Node storage and mount verification</h2>
+      <div class="node-grid">
+        <template x-for="n in ckpt.nodes" :key="n.hostname">
+          <div class="node">
+            <div class="head">
+              <div><div class="name" x-text="n.hostname"></div><div class="muted" x-text="`${n.role} · ${n.worker_id}`"></div></div>
+              <span class="tag" :class="{ on: n.accessible }" x-text="n.accessible ? 'VERIFIED' : 'UNAVAILABLE'"></span>
+            </div>
+            <div class="path" x-text="n.checkpoint_dir"></div>
+            <div class="stats">
+              <div><div>Checkpoints</div><strong x-text="n.checkpoints_count"></strong></div>
+              <div><div>Disk free</div><strong x-text="n.disk_available_gb + ' GB'"></strong></div>
+              <div><div>Status</div><strong x-text="n.status"></strong></div>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <h2>Committed checkpoint inventory</h2>
+      <div class="filters" role="toolbar" aria-label="Filter by node">
+        <button type="button" :aria-pressed="ckptNode === ''" @click="ckptNode = ''">All nodes</button>
+        <template x-for="n in ckpt.nodes" :key="n.hostname">
+          <button type="button" :aria-pressed="ckptNode === n.hostname" @click="ckptNode = n.hostname" x-text="n.hostname"></button>
+        </template>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Job ID</th><th>Checkpoint</th><th>Epoch</th><th>Step</th><th>Loss</th><th>Saved by</th><th>Verified on</th><th>Model size</th><th>Created</th><th></th></tr></thead>
+          <tbody>
+            <template x-for="c in filteredCheckpoints" :key="c.job_id + c.checkpoint_name">
+              <tr>
+                <td class="mono"><strong x-text="c.job_id"></strong></td>
+                <td><span class="mono" x-text="c.checkpoint_name"></span> <span class="tag on" x-show="c.is_latest">LATEST</span></td>
+                <td x-text="c.epoch"></td>
+                <td x-text="c.global_step"></td>
+                <td x-text="c.loss.toFixed(4)"></td>
+                <td class="mono" x-text="c.saved_by_node"></td>
+                <td>
+                  <template x-for="h in (c.verified_nodes || [])" :key="h"><span class="tag on" x-text="h"></span> </template>
+                  <span class="muted" x-show="!(c.verified_nodes || []).length">Unverified</span>
+                </td>
+                <td x-text="c.model_size_mb + ' MB'"></td>
+                <td class="muted" x-text="c.created_at"></td>
+                <td><button type="button" class="secondary sm" @click="inspect(c)">Inspect</button></td>
+              </tr>
+            </template>
+            <tr x-show="!filteredCheckpoints.length">
+              <td class="empty" colspan="10" x-text="ckptNode ? `No checkpoints found matching node ${ckptNode}` : 'No saved checkpoints found in cluster'"></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <template x-if="detail">
+        <div class="panel key" style="margin-top:1.5rem">
+          <div class="page-head" style="margin:0">
+            <h2 style="margin:0">Checkpoint details <span class="mono accent" x-text="`${detail.c.job_id} / ${detail.c.checkpoint_name}`"></span></h2>
+            <button type="button" class="secondary sm" @click="detail = null">Close</button>
+          </div>
+          <p class="muted" style="margin:.75rem 0 0">
+            <strong>Directory</strong> <span class="mono" x-text="detail.c.path"></span><br>
+            <strong>Dataset</strong> <span class="mono" x-text="`${detail.c.dataset_id}:${detail.c.dataset_version}`"></span><br>
+            <strong>Artifacts</strong> <span class="mono" x-text="(detail.c.saved_files || []).join(', ')"></span>
+          </p>
+          <pre x-text="detail.json"></pre>
+        </div>
+      </template>
+    </section>
+  </main>
 </body>
 </html>

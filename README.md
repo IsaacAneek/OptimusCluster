@@ -299,11 +299,10 @@ If any worker drops out during training:
 
 Hosted on the controller at `http://isaac.local:8080`.
 
-- **UI Structure & Theme**: Designed following **Claude.ai's layout** (left sidebar navigation, top header, clean card canvas) and **VSCode White theme**:
-  - Primary color (`#0066b8`) for important sections, active tabs, and highlights.
-  - Black (`#000000`) for text.
-  - White (`#ffffff`) and light surfaces (`#f8f9fa`, `#e5e5e5`) for borders and backgrounds.
-  - Strict zero-other-colors design.
+- **UI Stack**: **Alpine.js** (declarative state and rendering, one small component in `static/app.js`) on **Pico CSS**, themed to the **IBM Carbon** design language: 48px dark shell header, 256px side navigation, square-cornered tiles, Carbon data-table headers and pill tags, 8px spacing grid. Fonts are **IBM Plex Sans** (UI) and **IBM Plex Mono** (IDs, paths, metrics). Alpine, Pico and the fonts are vendored in `static/vendor/`, so the dashboard works on a LAN with no internet. There is no hand-written DOM or boilerplate JavaScript.
+- **Three-color palette** (`static/theme.css`, enforced by a test):
+  - Paper `#f4f4f4` and ink `#161616` are the two majority colors (surfaces, text, borders, header). Muted text, borders and table headers are mixes of just these two.
+  - Primary blue `#0f62fe` is reserved for important parts: key metrics, primary actions, healthy/verified tags, the active nav item, focus rings.
 - **Dedicated Dashboard Views**:
   - **Overview**: Real-time worker availability counts, active jobs, cached bytes, and saved checkpoints summary card.
   - **LAN Topology Discovery**: Scans subnet via `nmap -sn` and resolves reverse mDNS names via `avahi-resolve -a` to classify gateways, controllers, active workers, and LAN devices.
@@ -591,8 +590,8 @@ optimus/
 |       |
 |       |-- dashboard/
 |           |-- app.py           # FastAPI application & checkpoint verification API
-|           |-- templates/       # Claude.ai layout HTML templates
-|           |-- static/          # VSCode White theme CSS & JavaScript
+|           |-- templates/       # Alpine.js + Pico CSS single-page markup
+|           |-- static/          # theme.css (Carbon tokens), app.js (Alpine component), vendor/ (Alpine, Pico, IBM Plex)
 |
 |-- example/
 |   |-- example_dataset.py       # Synthetic dataset builder

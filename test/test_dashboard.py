@@ -15,13 +15,52 @@ def client():
 
 
 def test_dashboard_index_html(client):
-    """Verifies that the index page renders valid HTML and passes request context correctly."""
+    """The index page is an Alpine.js app styled with Pico CSS and the Carbon-based theme."""
     response = client.get("/")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
-    assert "Optimus" in response.text
-    assert "Overview" in response.text
-    assert "LAN Discovery" in response.text
+    html = response.text
+    assert "Optimus" in html
+    assert 'x-data="dashboard"' in html
+    assert "/static/vendor/pico.min.css" in html
+    assert "/static/vendor/alpine.min.js" in html
+    assert "/static/theme.css" in html
+    assert "/static/app.js" in html
+
+
+def test_dashboard_static_assets_are_served_locally(client):
+    """Alpine, Pico and IBM Plex are vendored so the dashboard works on an offline LAN."""
+    for path, ctype in [
+        ("/static/vendor/alpine.min.js", "javascript"),
+        ("/static/vendor/pico.min.css", "css"),
+        ("/static/theme.css", "css"),
+        ("/static/app.js", "javascript"),
+        ("/static/vendor/fonts/ibm-plex-sans-400.woff2", "font"),
+        ("/static/vendor/fonts/ibm-plex-mono-400.woff2", "font"),
+    ]:
+        r = client.get(path)
+        assert r.status_code == 200, path
+        assert ctype in r.headers["content-type"], path
+        assert len(r.content) > 1000, path
+    # The old hand-written DOM script and stylesheet are gone
+    assert client.get("/static/main.js").status_code == 404
+    assert client.get("/static/style.css").status_code == 404
+
+
+def test_dashboard_views_declared(client):
+    """Navigation labels live in the Alpine component."""
+    js = client.get("/static/app.js").text
+    for label in ("Overview", "LAN Discovery", "Workers", "Scheduler", "Training Jobs", "Dataset Cache", "Checkpoints"):
+        assert label in js
+
+
+def test_dashboard_uses_only_three_theme_colors(client):
+    """Theme defines exactly paper/ink/primary; no other hex colors are introduced."""
+    import re
+
+    css = client.get("/static/theme.css").text
+    hexes = set(re.findall(r"#[0-9a-fA-F]{3,8}\b", css))
+    assert hexes == {"#f4f4f4", "#161616", "#0f62fe"}
 
 
 def test_dashboard_api_overview(client):
