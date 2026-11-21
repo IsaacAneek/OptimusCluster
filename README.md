@@ -77,7 +77,7 @@ Two roles. The **controller** is your workstation, where your script runs. A **w
               +------------------+------------------+
               v                                     v
    +------------------------+            +------------------------+
-   | WORKER  pi02           |            | WORKER  pi03           |
+   | WORKER  node 1         |            | WORKER  node 2         |
    |  optimusd (passive)    |            |  optimusd (passive)    |
    |    +- training process |<== Gloo ==>|    +- training process |
    |  /mnt/nfs-origin (data)|            |  /mnt/nfs-origin (data)|
@@ -103,6 +103,21 @@ Nothing sent over the network is pickled or evaluated. Workers receive import pa
 
 You need one controller (Linux, e.g. Ubuntu) and one or more workers (Raspberry Pi 5 with 64-bit Raspberry Pi OS is what Optimus is built and tested on). All machines must share a LAN and run **the same PyTorch version**, which Gloo requires.
 
+### Required system packages
+
+Discovery shells out to two tools. Install them on the controller (workers get them from `install.sh`):
+
+| apt package | provides | used for |
+|---|---|---|
+| `nmap` | `nmap` | port-scanning the LAN for `optimusd` (port 45870) |
+| `avahi-utils` | `avahi-resolve` | resolving IPs to `.local` hostnames |
+
+```bash
+sudo apt-get install -y nmap avahi-utils
+```
+
+If either is missing Optimus fails gracefully: without `nmap`, `optimus discover` and the dashboard's Scan button stop with an install hint; without `avahi-utils`, names fall back to `getent`/reverse DNS (possibly bare IPs) with a warning.
+
 ### 1. Controller
 
 ```bash
@@ -115,18 +130,16 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-Create the data and checkpoint folders and export them to your LAN (adjust the subnet):
+Create the data and checkpoint folders and export them to your LAN (use your own subnet in `/etc/exports`):
 
 ```bash
 sudo mkdir -p /srv/datasets /srv/checkpoints /var/cache/optimus
 sudo chown -R $USER:$USER /srv/datasets /srv/checkpoints /var/cache/optimus
 ```
 
-Add to `/etc/exports`:
-
 ```text
-/srv/datasets    192.168.10.0/24(ro,sync,no_subtree_check,no_root_squash)
-/srv/checkpoints 192.168.10.0/24(rw,sync,no_subtree_check,no_root_squash)
+/srv/datasets    <your-subnet>(ro,sync,no_subtree_check,no_root_squash)
+/srv/checkpoints <your-subnet>(rw,sync,no_subtree_check,no_root_squash)
 ```
 
 ```bash
@@ -136,53 +149,49 @@ sudo systemctl restart nfs-kernel-server
 
 ### 2. Each worker (repeat per Pi)
 
-```bash
-sudo apt-get update
-sudo apt-get install -y nfs-common avahi-daemon python3-pip python3-yaml
-
-# folders and NFS mounts (replace the IP with your controller's)
-sudo mkdir -p /mnt/nfs-origin /var/cache/optimus /srv/checkpoints
-sudo chown -R pi:pi /var/cache/optimus /srv/checkpoints
-sudo mount -t nfs -o ro,soft,timeo=30 192.168.10.127:/srv/datasets    /mnt/nfs-origin
-sudo mount -t nfs -o rw,soft,timeo=30 192.168.10.127:/srv/checkpoints /srv/checkpoints
-
-# code (copy the repo to ~/OptimusDL on the Pi, with the same config.yaml as the controller)
-cd ~/OptimusDL
-pip3 install -e . --no-deps --break-system-packages
-```
-
-Add the two mounts to `/etc/fstab` if you want them to survive a reboot.
-
-Run the daemon as a service:
+Workers run from a git clone that lives on the controller's NFS share, so there is nothing to copy around: `git pull` once and every worker sees it. Mount the share that holds the clone on the Pi (the way you prefer; Optimus does not touch that mount), then:
 
 ```bash
-sudo cp deploy/optimusd.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now optimusd
-sudo systemctl status optimusd
+cd <path-to-clone>
+./deploy/install.sh
 ```
 
-Edit `User` and the paths in the unit if yours differ from `pi` and `/home/pi/OptimusDL`. For a quick foreground run: `optimusd --config config.yaml`.
+`deploy/install.sh` is idempotent (safe to re-run after every update). It:
 
-### 3. Tell the controller about your workers
+- installs `nmap`, `avahi-utils`, `python3-pip`, `python3-yaml` (and `nfs-common` when NFS is configured) with apt;
+- runs `pip3 install -e . --no-deps --break-system-packages`;
+- creates the cache, checkpoint and dataset-mount directories named in `config.yaml`;
+- adds/mounts the dataset and checkpoint NFS mounts (from `dataset.nfs_server`, `dataset.nfs_export`, `training.checkpoint_nfs_export`) in `/etc/fstab`;
+- disables the old `optimus-worker` service if present;
+- installs, enables and restarts the `optimusd` systemd unit (from `deploy/optimusd.service`, filled in with the clone path and the current user).
 
-Edit `config.yaml` on the controller:
+Preview without changing anything with `./deploy/install.sh --dry-run`. For a quick foreground run: `optimusd --config config.yaml`.
 
-```yaml
-cluster:
-  secret: "change-me"        # must match on every machine
+### 3. Generate `config.yaml` (host discovery)
 
-workers:
-  - hostname: pi02.local
-    enabled: true
-  - hostname: pi03.local
-    enabled: true
+There are no hostnames or IPs in the code or in the example config. The worker list is generated by scanning your LAN for `optimusd`:
+
+```bash
+optimus discover          # run on the controller, after the workers are up
 ```
+
+This detects your subnet from the local interface, port-scans it with `nmap` for port 45870, resolves each hostname with `avahi-resolve` (falling back to `getent`, then reverse DNS), checks each host with `GET /v1/status` using the cluster secret, and also ping-sweeps the subnet and records every live host under `hosts:` (ip, hostname, whether it runs optimusd), and writes the `workers:` list (plus `discovery.subnet` and `dataset.nfs_server`) to `config.yaml`. A new `config.yaml` gets a random cluster secret; because the clone is shared, workers read the same file.
+
+```bash
+optimus discover --subnet 10.0.0.0/24   # scan a specific subnet
+optimus discover --no-verify            # trust the open port, skip /v1/status
+optimus discover --merge                # keep workers that were not found this time
+optimus discover --dry-run              # print, write nothing
+optimus discover --output other.yaml    # write elsewhere
+```
+
+The dashboard has the same thing: **Scan for workers** runs the discovery, rewrites `config.yaml` and reloads the worker list. If `config.yaml` is missing or has no workers, the SDK and CLI stop with a message telling you to run discovery. Hosts are never read from anywhere else. `config.yaml` is generated, per-LAN and holds your secret, so it is git-ignored; `example/config.yaml` is a template with an empty `workers:` list.
 
 ### 4. Check it works
 
 ```bash
-curl -H "Authorization: Bearer change-me" http://pi02.local:45870/v1/status
+optimus discover --dry-run     # lists the workers it can see
+curl -H "Authorization: Bearer <secret from config.yaml>" http://<worker>:45870/v1/status
 ```
 
 A JSON status reply means the daemon is up and the secret matches. Then, from the controller:
@@ -193,7 +202,7 @@ python -c "from optimus import Optimus; print(Optimus(config='config.yaml').prob
 
 You should see a table with each worker `AVAILABLE`.
 
-> **Important:** the model code you train must be importable by the same module name on the controller **and on every worker**. See [Usage](#usage). Re-copy it to the Pis after you edit it.
+> **Important:** the model code you train must be importable by the same module name on the controller **and on every worker**. See [Usage](#usage). With the shared clone, `git pull` is enough.
 
 ---
 
@@ -413,7 +422,8 @@ Optimus is an MVP prototype. Know these before you rely on it:
 ```
 .
 |-- config.yaml                    cluster configuration
-|-- deploy/optimusd.service        systemd unit for the worker daemon
+|-- deploy/                        install.sh (idempotent worker setup) + optimusd.service template
+|-- src/optimus/discover.py, cli.py   LAN discovery and the `optimus discover` command
 |-- assets/logo.svg
 |-- src/optimus/
 |   |-- sdk.py  dataset.py  trainer.py  cluster.py     developer-facing SDK

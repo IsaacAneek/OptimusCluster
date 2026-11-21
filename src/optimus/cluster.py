@@ -10,6 +10,15 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 
+DISCOVER_HINT = (
+    "Run `optimus discover` (or press Scan in the dashboard) to generate the worker list."
+)
+
+
+class ConfigError(ValueError):
+    """Configuration is missing or unusable; the message says how to fix it."""
+
+
 @dataclass
 class ClusterMetadata:
     name: str = "optimus"
@@ -28,7 +37,7 @@ class ControllerConfig:
 class DiscoveryConfig:
     method: str = "mdns_nmap"
     scan_interval: int = 30
-    subnet: str = "192.168.1.0/24"
+    subnet: str = ""  # empty = auto-detect from the local interface
     use_configured_hosts: bool = True
 
 
@@ -51,7 +60,8 @@ class CommunicationConfig:
 @dataclass
 class DatasetConfig:
     controller_storage: str = "/srv/datasets"
-    nfs_export: str = "/datasets"
+    nfs_server: str = ""  # filled in by `optimus discover`; used by deploy/install.sh
+    nfs_export: str = "/srv/datasets"
     worker_nfs_mount: str = "/mnt/nfs-origin"
     fuse_mount: str = "/mnt/dataset"
 
@@ -67,6 +77,7 @@ class CacheConfig:
 class TrainingConfig:
     backend: str = "gloo"
     checkpoint_directory: str = "/srv/checkpoints"
+    checkpoint_nfs_export: str = "/srv/checkpoints"
     max_restarts: int = 3
 
 
@@ -139,12 +150,22 @@ class OptimusConfig:
     def load(cls, config_path: str = "config.yaml") -> "OptimusConfig":
         path = Path(config_path)
         if not path.is_file():
-            raise FileNotFoundError(f"Configuration file not found: {config_path}")
+            raise FileNotFoundError(
+                f"Configuration file not found: {config_path}. {DISCOVER_HINT}"
+            )
 
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
 
         return cls.from_dict(data)
+
+    def require_workers(self) -> None:
+        """Errors clearly when the generated host list is missing or empty."""
+        if not any(w.enabled for w in self.workers):
+            raise ConfigError(
+                "No workers are configured (config 'workers' is missing or empty). "
+                + DISCOVER_HINT
+            )
 
     def validate(self) -> None:
         """Validates configuration sanity and thresholds."""

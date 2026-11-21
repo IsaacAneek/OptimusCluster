@@ -23,6 +23,7 @@ document.addEventListener("alpine:init", () => {
     overview: {},
     workers: [],
     hosts: [],
+    scanInfo: null,
     jobs: [],
     cache: [],
     ckpt: { summary: {}, nodes: [], checkpoints: [] },
@@ -106,7 +107,12 @@ document.addEventListener("alpine:init", () => {
       });
     },
     scan() {
-      return this.run("scan", async () => { this.hosts = await this.api("/api/discovery/scan", { method: "POST" }); });
+      return this.run("scan", async () => {
+        const r = await this.api("/api/discovery/scan", { method: "POST" });
+        this.hosts = r.hosts;
+        this.scanInfo = r;
+        this.refreshLive();
+      });
     },
     submitSchedule() {
       return this.run("schedule", async () => {

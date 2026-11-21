@@ -61,7 +61,7 @@ def test_discovery_full_flow():
     config.cluster.secret = "secret-abc"
     config.workers = [
         WorkerNodeConfig(hostname="localhost", port=port, enabled=True),
-        WorkerNodeConfig(hostname="non-existent.local", port=port, enabled=True),
+        WorkerNodeConfig(hostname="unreachable.invalid", port=port, enabled=True),
     ]
 
     disco = NodeDiscoveryManager(config)

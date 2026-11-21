@@ -1,5 +1,5 @@
 flowchart TD
-    subgraph ControllerHost["CONTROLLER WORKSTATION (isaac.local / 192.168.10.127)"]
+    subgraph ControllerHost["CONTROLLER WORKSTATION (<controller-host> / <controller-ip>)"]
         UserCode["User Training Script\n(example/train_cifar10.py)"]
         ConfigYAML["Config File\n(config.yaml)"]
         OptimusEngine["Optimus SDK & Trainer\n(src/optimus/trainer.py)"]
@@ -14,10 +14,10 @@ flowchart TD
         OptimusEngine --> Launcher
     end
 
-    subgraph Pi02Host["WORKER NODE 1 (pi02.local / 192.168.10.150)"]
+    subgraph Pi02Host["WORKER NODE 1 (<worker-1-host> / <worker-1-ip>)"]
         Daemon02["optimus-worker.service\n(TCP Listener :45870)"]
         Exec02["TrainingExecutor\n(Subprocess Manager)"]
-        Subproc02["worker_entry.py (Rank 0)\nMASTER_ADDR=192.168.10.150\nMASTER_PORT=29500"]
+        Subproc02["worker_entry.py (Rank 0)\nMASTER_ADDR=<worker-1-ip>\nMASTER_PORT=29500"]
         GlooServer["Gloo TCPStore Server\n(:29500)"]
         NFSMount02["NFS Mount\n(/mnt/nfs-origin)"]
 
@@ -27,10 +27,10 @@ flowchart TD
         NFSMount02 -.->|"reads samples"| Subproc02
     end
 
-    subgraph Pi03Host["WORKER NODE 2 (pi03.local / 192.168.10.101)"]
+    subgraph Pi03Host["WORKER NODE 2 (<worker-2-host> / <worker-2-ip>)"]
         Daemon03["optimus-worker.service\n(TCP Listener :45870)"]
         Exec03["TrainingExecutor\n(Subprocess Manager)"]
-        Subproc03["worker_entry.py (Rank 1)\nMASTER_ADDR=192.168.10.150\nMASTER_PORT=29500"]
+        Subproc03["worker_entry.py (Rank 1)\nMASTER_ADDR=<worker-1-ip>\nMASTER_PORT=29500"]
         NFSMount03["NFS Mount\n(/mnt/nfs-origin)"]
 
         Daemon03 --> Exec03

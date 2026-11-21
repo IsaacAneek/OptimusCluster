@@ -39,9 +39,10 @@ def main():
 
     try:
         config = OptimusConfig.load(args.config)
+        config.require_workers()
         logger.info(f"Loaded and validated configuration from '{args.config}' (Cluster: {config.cluster.name})")
     except Exception as e:
-        logger.error(f"Configuration validation failed: {e}")
+        logger.error(f"Configuration error: {e}")
         sys.exit(1)
 
     client_mgr = WorkerClientManager(

@@ -31,23 +31,23 @@ def test_scheduler_exclusions_and_scoring(tmp_path):
 
     # 4 workers with different profiles:
     # Worker 1: unavailable
-    probe_mgr._workers[("pi01.local", 45870)] = WorkerNodeState(
-        hostname="pi01.local", port=45870, worker_id="pi-01",
+    probe_mgr._workers[("worker-01.test", 45870)] = WorkerNodeState(
+        hostname="worker-01.test", port=45870, worker_id="pi-01",
         state=WorkerState.UNAVAILABLE, ram_available_mb=4000, cache_disk_available_gb=50
     )
     # Worker 2: low RAM
-    probe_mgr._workers[("pi02.local", 45870)] = WorkerNodeState(
-        hostname="pi02.local", port=45870, worker_id="pi-02",
+    probe_mgr._workers[("worker-02.test", 45870)] = WorkerNodeState(
+        hostname="worker-02.test", port=45870, worker_id="pi-02",
         state=WorkerState.AVAILABLE, ram_available_mb=200, cache_disk_available_gb=50 # low RAM
     )
     # Worker 3: healthy, 20% locality
-    probe_mgr._workers[("pi03.local", 45870)] = WorkerNodeState(
-        hostname="pi03.local", port=45870, worker_id="pi-03",
+    probe_mgr._workers[("worker-03.test", 45870)] = WorkerNodeState(
+        hostname="worker-03.test", port=45870, worker_id="pi-03",
         state=WorkerState.AVAILABLE, cpu_percent=20.0, ram_available_mb=4000, cache_disk_available_gb=50
     )
     # Worker 4: healthy, 90% locality
-    probe_mgr._workers[("pi04.local", 45870)] = WorkerNodeState(
-        hostname="pi04.local", port=45870, worker_id="pi-04",
+    probe_mgr._workers[("worker-04.test", 45870)] = WorkerNodeState(
+        hostname="worker-04.test", port=45870, worker_id="pi-04",
         state=WorkerState.AVAILABLE, cpu_percent=20.0, ram_available_mb=4000, cache_disk_available_gb=50
     )
 
@@ -60,8 +60,8 @@ def test_scheduler_exclusions_and_scoring(tmp_path):
     )
 
     cache_coord = MockCacheCoordinator({
-        "pi03.local": (0.20, 200),
-        "pi04.local": (0.90, 900),
+        "worker-03.test": (0.20, 200),
+        "worker-04.test": (0.90, 900),
     })
 
     scheduler = Scheduler(
@@ -80,11 +80,11 @@ def test_scheduler_exclusions_and_scoring(tmp_path):
     assert len(result.selected_nodes) == 2
 
     # High locality node (pi04) must be assigned Rank 0 with higher score
-    assert result.selected_nodes[0].hostname == "pi04.local"
+    assert result.selected_nodes[0].hostname == "worker-04.test"
     assert result.selected_nodes[0].rank == 0
     assert result.selected_nodes[0].cache_locality == 0.90
 
-    assert result.selected_nodes[1].hostname == "pi03.local"
+    assert result.selected_nodes[1].hostname == "worker-03.test"
     assert result.selected_nodes[1].rank == 1
 
     # Verify atomic output file on disk

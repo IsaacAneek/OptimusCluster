@@ -3,16 +3,16 @@ sequenceDiagram
     actor User as Developer
     participant Script as Controller Script (train_cifar10.py)
     participant Core as Controller Engine (SDK / Launcher)
-    participant Pi02d as Pi02 Daemon (192.168.10.150:45870)
+    participant Pi02d as Pi02 Daemon (<worker-1-ip>:45870)
     participant Pi02p as Pi02 Worker Process (Rank 0)
-    participant Pi03d as Pi03 Daemon (192.168.10.101:45870)
+    participant Pi03d as Pi03 Daemon (<worker-2-ip>:45870)
     participant Pi03p as Pi03 Worker Process (Rank 1)
 
     %% Phase 1: Configuration & Resolution
     Note over User,Core: Phase 1: Discovery & IP Resolution
     User->>Script: python3 example/train_cifar10.py
     Script->>Core: cluster = Optimus(config="config.yaml")
-    Core->>Core: Avahi mDNS / DNS resolution:<br/>pi02.local -> 192.168.10.150<br/>pi03.local -> 192.168.10.101
+    Core->>Core: Avahi mDNS / DNS resolution:<br/><worker-1-host> -> <worker-1-ip><br/><worker-2-host> -> <worker-2-ip>
     Core->>Pi02d: TCP :45870 StatusRequest / ResourceRequest
     Pi02d-->>Core: StatusResponse (State=AVAILABLE, 8GB RAM, 4 Cores)
     Core->>Pi03d: TCP :45870 StatusRequest / ResourceRequest
@@ -21,22 +21,22 @@ sequenceDiagram
     %% Phase 2: Scheduling & Job Dispatch
     Note over Script,Pi03d: Phase 2: Scheduler & TCP Job Dispatch
     Script->>Core: trainer.fit()
-    Core->>Core: Scheduler selects nodes & sets Rendezvous:<br/>Rank 0 = 192.168.10.150 (pi02)<br/>Rank 1 = 192.168.10.101 (pi03)<br/>MASTER_ADDR = 192.168.10.150, MASTER_PORT = 29500
+    Core->>Core: Scheduler selects nodes & sets Rendezvous:<br/>Rank 0 = <worker-1-ip> (pi02)<br/>Rank 1 = <worker-2-ip> (pi03)<br/>MASTER_ADDR = <worker-1-ip>, MASTER_PORT = 29500
     
-    Core->>Pi02d: TCP :45870 JobSubmit(rank=0, world_size=2, master_addr="192.168.10.150", port=29500)
+    Core->>Pi02d: TCP :45870 JobSubmit(rank=0, world_size=2, master_addr="<worker-1-ip>", port=29500)
     Pi02d-->>Core: JobResponse(accepted=True)
-    Core->>Pi03d: TCP :45870 JobSubmit(rank=1, world_size=2, master_addr="192.168.10.150", port=29500)
+    Core->>Pi03d: TCP :45870 JobSubmit(rank=1, world_size=2, master_addr="<worker-1-ip>", port=29500)
     Pi03d-->>Core: JobResponse(accepted=True)
 
     %% Phase 3: Subprocess Spawning
     Note over Pi02d,Pi03p: Phase 3: Environment Injection & Subprocess Spawning
-    Pi02d->>Pi02p: subprocess.Popen(worker_entry.py)<br/>env: RANK=0, MASTER_ADDR=192.168.10.150, MASTER_PORT=29500
-    Pi03d->>Pi03p: subprocess.Popen(worker_entry.py)<br/>env: RANK=1, MASTER_ADDR=192.168.10.150, MASTER_PORT=29500
+    Pi02d->>Pi02p: subprocess.Popen(worker_entry.py)<br/>env: RANK=0, MASTER_ADDR=<worker-1-ip>, MASTER_PORT=29500
+    Pi03d->>Pi03p: subprocess.Popen(worker_entry.py)<br/>env: RANK=1, MASTER_ADDR=<worker-1-ip>, MASTER_PORT=29500
 
     %% Phase 4: PyTorch Gloo Rendezvous
     Note over Pi02p,Pi03p: Phase 4: PyTorch Gloo Rendezvous
     Pi02p->>Pi02p: dist.init_process_group("gloo")<br/>Binds TCPStore server on 0.0.0.0:29500
-    Pi03p->>Pi02p: TCP Connect 192.168.10.150:29500 (Gloo TCPStore handshake)
+    Pi03p->>Pi02p: TCP Connect <worker-1-ip>:29500 (Gloo TCPStore handshake)
     Pi02p-->>Pi03p: TCP Handshake ACK (Gloo full mesh connected)
 
     %% Phase 5: Training Loop & Gradient AllReduce

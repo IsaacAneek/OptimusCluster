@@ -1,23 +1,22 @@
+# Example config. The `workers` list is generated, not written by hand:
+#   optimus discover --config example/config.yaml
 cluster:
   name: optimus-example
   protocol_version: 1
   secret: "optimus-cluster-secret"
 
 controller:
-  hostname: isaac.local
+  hostname: controller
   tcp_port: 45870
   dashboard_port: 8080
 
 discovery:
   method: mdns_nmap
   scan_interval: 30
-  subnet: "192.168.10.0/24"
+  subnet: ""   # empty = auto-detect from the local interface
   use_configured_hosts: true
 
-workers:
-  - hostname: localhost
-    port: 45871
-    enabled: true
+workers: []   # generated: run `optimus discover --config example/config.yaml`
 
 communication:
   request_timeout: 3.0
@@ -27,7 +26,8 @@ communication:
 
 dataset:
   controller_storage: /srv/datasets
-  nfs_export: /datasets
+  nfs_server: ""   # set by `optimus discover`
+  nfs_export: /srv/datasets
   worker_nfs_mount: /mnt/nfs-origin
   fuse_mount: /mnt/dataset
 

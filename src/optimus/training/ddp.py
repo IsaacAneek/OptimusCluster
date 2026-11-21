@@ -49,7 +49,7 @@ def init_distributed(
     env_addr = master_addr or os.environ.get("MASTER_ADDR", "127.0.0.1")
     env_port = str(master_port or os.environ.get("MASTER_PORT", 29500))
 
-    # Resolve master_addr to IP address if given a hostname (e.g. pi02.local)
+    # Resolve master_addr to IP address if given a hostname (e.g. a .local mDNS name)
     try:
         resolved_ip = socket.gethostbyname(env_addr)
         env_addr = resolved_ip

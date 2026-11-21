@@ -5,7 +5,7 @@ Provides the primary developer-facing interface to interact with the Optimus clu
 
 import logging
 import os
-from typing import Optional
+from typing import Optional, Union
 
 from optimus.cluster import OptimusConfig
 from optimus.controller.cache_registry import ClusterCacheCoordinator
@@ -27,9 +27,24 @@ class Optimus:
     caching registries, scheduling, and distributed training execution.
     """
 
-    def __init__(self, config: str = "config.yaml"):
-        self.config_path = config
-        self.config = OptimusConfig.load(config)
+    def __init__(self, config: Union[str, OptimusConfig] = "config.yaml", allow_empty: bool = False):
+        """
+        ``config`` is a path to the generated config.yaml (see ``optimus discover``).
+        Raises FileNotFoundError / ConfigError with a discovery hint when the file
+        or its worker list is missing, unless ``allow_empty`` (used by the dashboard,
+        which can run discovery itself).
+        """
+        if isinstance(config, OptimusConfig):
+            self.config_path = "config.yaml"
+            self.config = config
+        else:
+            self.config_path = config
+            if allow_empty and not os.path.isfile(config):
+                self.config = OptimusConfig()
+            else:
+                self.config = OptimusConfig.load(config)
+        if not allow_empty:
+            self.config.require_workers()
 
         # 1. TCP Client Manager
         self.client_manager = WorkerClientManager(
@@ -88,6 +103,18 @@ class Optimus:
                     port=w.port,
                     worker_id=w.worker_id,
                 )
+
+    def reload_workers(self, config_path: Optional[str] = None) -> None:
+        """Re-reads the worker list from config.yaml (e.g. after discovery)."""
+        path = config_path or self.config_path
+        self.config = OptimusConfig.load(path)
+        self.config_path = path
+        self.discovery_manager.config = self.config
+        wanted = {(w.hostname, w.port) for w in self.config.workers if w.enabled}
+        for state in list(self.probe_manager.get_all_states()):
+            if (state.hostname, state.port) not in wanted:
+                self.probe_manager.unregister_worker(state.hostname, state.port)
+        self._register_configured_workers()
 
     def discover_nodes(self) -> None:
         """Runs Avahi mDNS resolution and protocol checks to discover live workers."""

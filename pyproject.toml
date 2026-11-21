@@ -24,6 +24,7 @@ dependencies = [
 [project.scripts]
 optimusd = "optimus.worker.optimusd:main"
 optimus-cluster = "optimus.cluster:main"
+optimus = "optimus.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

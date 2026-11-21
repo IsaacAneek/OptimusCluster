@@ -61,7 +61,7 @@ class NodeDiscoveryManager:
 
     def resolve_mdns(self, hostname: str, timeout: float = 1.5) -> Optional[str]:
         """
-        Resolves an mDNS hostname (e.g. 'pi02.local') using Avahi with fallback
+        Resolves an mDNS hostname (e.g. 'worker.local') using Avahi with fallback
         to standard system getaddrinfo resolver.
         """
         if self.avahi_cmd:
@@ -182,7 +182,9 @@ class NodeDiscoveryManager:
         Discovers all live hosts on the LAN via Nmap, resolves hostnames via Avahi,
         and identifies Optimus workers vs other network entities.
         """
-        target_subnet = subnet or self.config.discovery.subnet or "192.168.10.0/24"
+        from optimus.discover import detect_subnet
+
+        target_subnet = subnet or self.config.discovery.subnet or detect_subnet()
         live_ips = self.scan_subnet(target_subnet)
         default_port = self.config.controller.tcp_port or 45870
 

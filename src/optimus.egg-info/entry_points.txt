@@ -1,3 +1,4 @@
 [console_scripts]
+optimus = optimus.cli:main
 optimus-cluster = optimus.cluster:main
 optimusd = optimus.worker.optimusd:main

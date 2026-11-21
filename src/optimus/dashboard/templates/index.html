@@ -38,7 +38,7 @@
     <div class="page-head">
       <h1 x-text="title"></h1>
       <div class="actions">
-        <button type="button" class="secondary" @click="scan()" :disabled="!!busy.scan" x-text="busy.scan ? 'Scanning…' : 'Scan LAN Subnet'"></button>
+        <button type="button" class="secondary" @click="scan()" :disabled="!!busy.scan" x-text="busy.scan ? 'Scanning…' : 'Scan for workers'"></button>
         <button type="button" @click="probe()" :disabled="!!busy.probe" x-text="busy.probe ? 'Probing…' : 'Refresh Probes'"></button>
       </div>
     </div>
@@ -80,9 +80,15 @@
     <!-- LAN DISCOVERY -->
     <section x-show="view === 'discovery'">
       <div class="page-head">
-        <p>Live hosts, mDNS names and optimusd worker nodes on the subnet, from an Nmap ping sweep and Avahi resolution.</p>
-        <button type="button" @click="scan()" :disabled="!!busy.scan" x-text="busy.scan ? 'Scanning subnet…' : 'Run subnet sweep'"></button>
+        <p>Live hosts, mDNS names and optimusd worker nodes on the subnet, found by an Nmap port scan and Avahi resolution. A scan rewrites <code>config.yaml</code> with the workers it finds.</p>
+        <button type="button" @click="scan()" :disabled="!!busy.scan" x-text="busy.scan ? 'Scanning subnet…' : 'Scan for workers'"></button>
       </div>
+      <template x-if="scanInfo">
+        <p class="muted">
+          <span x-text="scanInfo.config_updated ? `Updated ${scanInfo.config_path} from ${scanInfo.subnet}.` : `config.yaml unchanged (scanned ${scanInfo.subnet}).`"></span>
+          <template x-for="w in scanInfo.warnings" :key="w"><span> · <span x-text="w"></span></span></template>
+        </p>
+      </template>
       <div class="table-wrap">
         <table>
           <thead><tr><th>IP address</th><th>mDNS hostname</th><th>Entity</th><th>Optimus worker</th><th>Worker ID</th><th>Status</th></tr></thead>
@@ -97,7 +103,7 @@
                 <td><span x-show="!h.status" class="muted">-</span><span x-show="h.status" class="tag" :class="{ on: healthy(h.status) }" x-text="h.status"></span></td>
               </tr>
             </template>
-            <tr x-show="!hosts.length"><td class="empty" colspan="6">No scan results yet. Run a subnet sweep.</td></tr>
+            <tr x-show="!hosts.length"><td class="empty" colspan="6">No workers found yet. Press Scan for workers.</td></tr>
           </tbody>
         </table>
       </div>

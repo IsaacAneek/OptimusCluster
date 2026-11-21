@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import shutil
+import socket
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -26,6 +27,7 @@ from optimus.protocol.messages import (
     JobState,
     WorkerState,
 )
+from optimus.discover import DiscoveryError, discover_and_write
 from optimus.sdk import Optimus
 
 logger = logging.getLogger("optimus.dashboard")
@@ -41,9 +43,9 @@ cluster_instance: Optional[Optimus] = None
 async def lifespan(app: FastAPI):
     global cluster_instance
     config_path = os.environ.get("OPTIMUS_CONFIG", "config.yaml")
-    if cluster_instance is None and os.path.isfile(config_path):
+    if cluster_instance is None:
         try:
-            cluster_instance = Optimus(config=config_path)
+            cluster_instance = Optimus(config=config_path, allow_empty=True)
             cluster_instance.probe_manager.start_probing_loop()
             logger.info("Optimus dashboard initialized cluster background manager")
         except Exception as e:
@@ -73,7 +75,9 @@ def get_cluster() -> Optimus:
     global cluster_instance
     if cluster_instance is None:
         config_path = os.environ.get("OPTIMUS_CONFIG", "config.yaml")
-        cluster_instance = Optimus(config=config_path)
+        # The dashboard can run discovery itself, so an empty/missing worker
+        # list is allowed here (the Scan button generates it).
+        cluster_instance = Optimus(config=config_path, allow_empty=True)
     return cluster_instance
 
 
@@ -124,7 +128,8 @@ async def get_overview():
         "active_jobs": active_jobs,
         "total_cached_bytes": total_cached_bytes,
         "total_checkpoints": total_checkpoints,
-        "subnet": cluster.config.discovery.subnet or "192.168.10.0/24",
+        "subnet": cluster.config.discovery.subnet or "auto-detect",
+        "workers_configured": len(cluster.config.workers),
     }
 
 
@@ -172,10 +177,42 @@ async def get_discovery():
 
 @app.post("/api/discovery/scan")
 async def scan_lan():
+    """
+    Runs the same discovery as `optimus discover` (nmap port scan for optimusd,
+    Avahi name resolution, /v1/status verification), rewrites config.yaml with
+    the hosts found, and reloads the cluster's worker list.
+    """
     cluster = get_cluster()
+    config_path = cluster.config_path
     loop = asyncio.get_event_loop()
-    hosts = await loop.run_in_executor(None, cluster.discovery_manager.scan_lan_topology)
-    return [h.to_dict() for h in hosts]
+    try:
+        result = await loop.run_in_executor(
+            None, lambda: discover_and_write(config_path, port=cluster.config.controller.tcp_port)
+        )
+    except DiscoveryError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    if result.hosts:
+        await loop.run_in_executor(None, cluster.reload_workers, config_path)
+    return {
+        "subnet": result.subnet,
+        "config_path": os.path.abspath(config_path),
+        "config_updated": bool(result.hosts),
+        "warnings": result.warnings,
+        "hosts": [
+            {
+                "ip": h.ip,
+                "hostname": h.hostname,
+                "is_optimus_worker": True,
+                "worker_id": h.worker_id,
+                "status": h.status,
+                "port": h.port,
+                "is_controller": h.is_local,
+                "is_gateway": False,
+                "active_jobs": h.active_jobs,
+            }
+            for h in result.hosts
+        ],
+    }
 
 
 @app.get("/api/cache")
@@ -374,7 +411,7 @@ async def collect_checkpoints_data(cluster: Optimus) -> Dict[str, Any]:
     )
 
     nodes_data = []
-    controller_host = cluster.config.controller.hostname or "isaac.local"
+    controller_host = cluster.config.controller.hostname or socket.gethostname()
 
     controller_avail_gb = 0
     try:
