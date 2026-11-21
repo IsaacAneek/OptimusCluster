@@ -80,16 +80,12 @@ def ensure_cifar10_dataset(
                         break
         print(f"Successfully downloaded {sum(counts.values())} CIFAR-10 images across {len(CIFAR10_CLASSES)} classes.")
     except Exception as e:
-        print(f"Notice: Mirror download encountered: {e}. Generating synthetic CIFAR-10 images fallback...")
-        import torchvision.transforms as T
-        for cls in CIFAR10_CLASSES:
-            cls_dir = os.path.join(output_dir, cls)
-            os.makedirs(cls_dir, exist_ok=True)
-            for i in range(samples_per_class):
-                img_t = torch.randint(0, 256, (3, 32, 32), dtype=torch.uint8)
-                img = T.ToPILImage()(img_t)
-                img.save(os.path.join(cls_dir, f"synth_{i:04d}.png"))
-        print(f"Generated synthetic CIFAR-10 fallback dataset in '{output_dir}'.")
+        # Never fall back to generated images here: they would land in the real dataset
+        # folder and the job would "succeed" on noise.
+        raise SystemExit(
+            f"Could not download CIFAR-10 into '{output_dir}': {e}\n"
+            "Check network access, or place the class folders there manually, then re-run."
+        ) from e
 
     return output_dir
 

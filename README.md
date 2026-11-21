@@ -388,8 +388,9 @@ repo root, which is optimusd's working directory) and pass their paths.
 | Argument | Contract | Default |
 |---|---|---|
 | `model_factory` | `fn(**model_kwargs) -> nn.Module`; `num_classes` is filled in if the function accepts it | required unless `model` is a torchvision ResNet (deprecated) or has `model_name` |
-| `dataset_factory` | `fn(data_dir, **dataset_kwargs) -> torch Dataset`; `data_dir` is the worker's dataset copy or `None` | ImageFolder if class folders exist, else synthetic tensors |
+| `dataset_factory` | `fn(data_dir, **dataset_kwargs) -> torch Dataset`; `data_dir` is the worker's dataset copy, or `None` only with `allow_synthetic_data=True` (otherwise a worker without the dataset fails with `DatasetUnavailableError`) | ImageFolder over the class folders; synthetic tensors only when opted in |
 | `model_kwargs` / `dataset_kwargs` | JSON-serializable dicts | `{}` |
+| `optimizer` / `loss_fn` | A built-in `torch.optim` optimizer (single param group) and `torch.nn` loss instance; workers rebuild them with the same settings (momentum, weight decay, ...). Custom classes are rejected with an error | `SGD(lr)` / `CrossEntropyLoss()` |
 
 Factories may also be passed as module-level callables; `Trainer` converts them to import paths
 (functions defined in the `__main__` script are rejected, since workers cannot import them).

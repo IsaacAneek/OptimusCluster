@@ -190,12 +190,12 @@ def default_dataset(
     input_shape: Sequence[int] = (3, 32, 32),
     image_size: int = 32,
 ) -> Dataset:
-    """ImageFolder when the worker has class subdirectories, synthetic tensors otherwise."""
-    if _has_class_subdirs(data_dir):
-        try:
-            return image_folder_dataset(data_dir, image_size=image_size)
-        except Exception as e:  # unreadable images, missing torchvision extras, ...
-            logger.warning(f"Could not load ImageFolder from '{data_dir}': {e}; using synthetic data")
+    """ImageFolder over ``data_dir``; synthetic tensors only when ``data_dir`` is None
+    (the worker passes None only if the job opted in with ``allow_synthetic_data``)."""
+    if data_dir is not None:
+        if not _has_class_subdirs(data_dir):
+            raise FileNotFoundError(f"No class subdirectories found in dataset dir '{data_dir}'")
+        return image_folder_dataset(data_dir, image_size=image_size)
     return synthetic_dataset(
         num_samples=num_samples, num_classes=num_classes, input_shape=input_shape
     )

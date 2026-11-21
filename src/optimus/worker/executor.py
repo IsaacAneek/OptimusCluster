@@ -167,7 +167,10 @@ class TrainingExecutor:
                         logger.info(f"Job '{record.job_id}' Rank {record.rank} COMPLETED")
                     else:
                         record.status = JobState.JOB_FAILED
-                        record.error_message = f"Process exited with code {exit_code}"
+                        record.error_message = (
+                            f"Process exited with code {exit_code}"
+                            + _log_tail(getattr(log_file, "name", ""))
+                        )
                         logger.error(f"Job '{record.job_id}' Rank {record.rank} FAILED ({exit_code})")
         finally:
             try:
@@ -236,3 +239,13 @@ class TrainingExecutor:
             rec.status = JobState.JOB_STOPPED
             rec.error_message = reason
             return True
+
+
+def _log_tail(path: str, max_lines: int = 25, max_chars: int = 3000) -> str:
+    """Last lines of a rank's log, so the controller sees the traceback without SSH."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            tail = "".join(f.readlines()[-max_lines:])[-max_chars:].rstrip()
+    except OSError:
+        return ""
+    return f"\n--- last lines of {os.path.basename(path)} ---\n{tail}" if tail else ""

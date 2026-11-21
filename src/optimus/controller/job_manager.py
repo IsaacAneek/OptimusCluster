@@ -27,6 +27,24 @@ from optimus.protocol.generated.messages_pb2 import (
 
 logger = logging.getLogger("optimus.controller.job_manager")
 
+# Consecutive polls in which a rank could not confirm it is still running/completed
+# (query error, JOB_UNKNOWN, JOB_STOPPED) before the attempt is treated as failed.
+MAX_STATUS_MISSES = 5
+
+# Worker errors that will fail identically on every attempt; restarting only delays
+# the error. Matched against the worker's error_message (which carries the traceback).
+NON_RETRYABLE_ERRORS = (
+    "DatasetUnavailableError",
+    "FactoryResolutionError",
+    "ModuleNotFoundError",
+    "ImportError",
+    "SyntaxError",
+)
+
+
+class NonRetryableJobError(RuntimeError):
+    """A worker failed in a way that a restart cannot fix (bad code path, missing data)."""
+
 
 @dataclass
 class JobRecord:
@@ -154,6 +172,14 @@ class JobManager:
                     self._finalize_completed_job(record, checkpoint_mgr, training_args)
                     return record
 
+            except NonRetryableJobError as e:
+                logger.error(f"Job '{job_id}' failed with a non-retryable error; not restarting")
+                record.error_message = str(e)
+                self._stop_ddp_group(record)
+                record.status = JobState.JOB_FAILED
+                record.completion_time = time.time()
+                return record
+
             except Exception as e:
                 logger.error(f"Error during job execution: {e}")
                 record.error_message = str(e)
@@ -192,6 +218,7 @@ class JobManager:
         Returns True if job completes successfully, False if worker failure requires restart.
         """
         selected = sched_result.selected_nodes
+        misses = {node.hostname: 0 for node in selected}
         while True:
             time.sleep(poll_interval)
 
@@ -213,21 +240,47 @@ class JobManager:
                         record.job_id, timeout=2.0
                     )
                     if status_resp.status == JobState.JOB_FAILED:
-                        logger.error(
-                            f"Worker {node.hostname} reported job failure: {status_resp.error_message}"
+                        msg = (
+                            f"Rank {node.rank} on {node.hostname} failed: "
+                            f"{status_resp.error_message}"
                         )
+                        logger.error(msg)
+                        record.error_message = msg
+                        if any(e in status_resp.error_message for e in NON_RETRYABLE_ERRORS):
+                            raise NonRetryableJobError(msg)
                         return False
 
                     if status_resp.status != JobState.JOB_COMPLETED:
                         all_completed = False
+                    if status_resp.status in (JobState.JOB_RUNNING, JobState.JOB_COMPLETED):
+                        misses[node.hostname] = 0
+                    else:  # JOB_UNKNOWN (optimusd restarted), JOB_STOPPED, ...
+                        misses[node.hostname] += 1
+                        logger.warning(
+                            f"Worker {node.hostname} reports job state "
+                            f"{JobState.Name(status_resp.status)}: {status_resp.error_message}"
+                        )
 
                     if node.rank == 0:
                         record.epoch = status_resp.epoch
                         record.global_step = status_resp.global_step
                         record.loss = status_resp.loss
 
+                except NonRetryableJobError:
+                    raise
                 except Exception as ex:
+                    # A failed query proves nothing about completion.
+                    all_completed = False
+                    misses[node.hostname] += 1
                     logger.warning(f"Failed to query job status on {node.hostname}: {ex}")
+
+                if misses[node.hostname] >= MAX_STATUS_MISSES:
+                    record.error_message = (
+                        f"Lost track of rank {node.rank} on {node.hostname} "
+                        f"({MAX_STATUS_MISSES} consecutive status checks failed)"
+                    )
+                    logger.error(record.error_message)
+                    return False
 
             # Check if all ranks completed
             if all_completed:

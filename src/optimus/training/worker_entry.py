@@ -6,6 +6,7 @@ and allows Rank 0 to write atomic checkpoints.
 """
 
 import argparse
+import inspect
 import json
 import logging
 import os
@@ -65,6 +66,39 @@ def update_status_file(
         pass
 
 
+class DatasetUnavailableError(RuntimeError):
+    """The worker has no copy of the requested dataset."""
+
+
+def build_optimizer(model: nn.Module, training_args: dict) -> torch.optim.Optimizer:
+    """Rebuild the controller's optimizer from its spec ({"type", "kwargs"}), else SGD(lr)."""
+    spec = training_args.get("optimizer")
+    if not spec:
+        return torch.optim.SGD(model.parameters(), lr=training_args.get("lr", 0.01))
+    cls = getattr(torch.optim, spec["type"], None)
+    if not (isinstance(cls, type) and issubclass(cls, torch.optim.Optimizer)):
+        raise ValueError(f"Unknown optimizer 'torch.optim.{spec['type']}'")
+    # Drop keys this torch version does not know (controller and Pi torch may differ).
+    accepted = inspect.signature(cls).parameters
+    kwargs = {
+        k: tuple(v) if isinstance(v, list) else v
+        for k, v in (spec.get("kwargs") or {}).items()
+        if k in accepted and v is not None
+    }
+    return cls(model.parameters(), **kwargs)
+
+
+def build_loss(training_args: dict) -> nn.Module:
+    """Rebuild the controller's loss from its spec ({"type", "kwargs"}), else CrossEntropyLoss."""
+    spec = training_args.get("loss")
+    if not spec:
+        return nn.CrossEntropyLoss()
+    cls = getattr(nn, spec["type"], None)
+    if not (isinstance(cls, type) and issubclass(cls, nn.Module)):
+        raise ValueError(f"Unknown loss 'torch.nn.{spec['type']}'")
+    return cls(**(spec.get("kwargs") or {}))
+
+
 def run_training():
     parser = argparse.ArgumentParser(description="Optimus Worker Training Process")
     parser.add_argument("--training-args", type=str, default="{}", help="JSON training arguments")
@@ -107,15 +141,21 @@ def run_training():
 
     checkpoint_mgr = CheckpointManager(base_dir=checkpoint_dir, job_id=job_id)
 
-    # 2. Locate this worker's copy of the dataset (NFS mount or local storage), if any
-    dataset_dir = None
-    for cand in [
+    # 2. Locate this worker's copy of the dataset (NFS mount or local storage).
+    # A missing dataset is fatal: silently training on random tensors would report a
+    # "successful" job whose model learned nothing. Synthetic data is opt-in only.
+    allow_synthetic = bool(training_args.get("allow_synthetic_data", False))
+    candidates = [
         f"/mnt/nfs-origin/{dataset_id}/{dataset_version}",
         f"/srv/datasets/{dataset_id}/{dataset_version}",
-    ]:
-        if os.path.isdir(cand):
-            dataset_dir = cand
-            break
+    ]
+    dataset_dir = next((c for c in candidates if os.path.isdir(c)), None)
+    if dataset_dir is None and not allow_synthetic:
+        raise DatasetUnavailableError(
+            f"Dataset '{dataset_id}' version '{dataset_version}' not found on this worker. "
+            f"Tried: {', '.join(candidates)}. Mount or copy the dataset there "
+            "(see README), or pass allow_synthetic_data=True to train on random data."
+        )
 
     num_classes = training_args.get("num_classes", 10)
     dataset_kwargs = dict(training_args.get("dataset_kwargs") or {})
@@ -142,8 +182,12 @@ def run_training():
     model = model_factory(**model_kwargs)
     logger.info(f"Model from '{model_factory_path}' with kwargs {model_kwargs}")
 
-    optimizer = torch.optim.SGD(model.parameters(), lr=training_args.get("lr", 0.01))
-    criterion = nn.CrossEntropyLoss()
+    optimizer = build_optimizer(model, training_args)
+    criterion = build_loss(training_args)
+    logger.info(
+        f"Optimizer: {optimizer.__class__.__name__} {optimizer.defaults}; "
+        f"loss: {criterion.__class__.__name__} {(training_args.get('loss') or {}).get('kwargs', {})}"
+    )
 
     # Wrap model with DistributedDataParallel
     ddp_model = nn.parallel.DistributedDataParallel(model)

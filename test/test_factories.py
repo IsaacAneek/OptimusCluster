@@ -161,6 +161,50 @@ def test_trainer_legacy_resnet_instance_warns(tmp_path):
     assert args["num_classes"] == 3
 
 
+def test_trainer_sends_optimizer_and_loss_specs(tmp_path):
+    import torch
+
+    model = nn.Linear(4, 3)
+    trainer = Trainer(
+        cluster=_stub_cluster(tmp_path),
+        model=model,
+        dataset=object(),
+        optimizer=torch.optim.SGD(model.parameters(), lr=0.05, momentum=0.9, weight_decay=1e-4),
+        loss_fn=nn.CrossEntropyLoss(label_smoothing=0.1),
+        model_factory="optimus.training.factories:mlp",
+        workers=1,
+    )
+    args = trainer.build_training_args()
+    json.dumps(args)
+    assert args["optimizer"]["type"] == "SGD"
+    assert args["optimizer"]["kwargs"]["momentum"] == 0.9
+    assert args["optimizer"]["kwargs"]["weight_decay"] == 1e-4
+    assert args["lr"] == 0.05  # taken from the optimizer
+    assert args["loss"] == {
+        "type": "CrossEntropyLoss",
+        "kwargs": {"ignore_index": -100, "reduction": "mean", "label_smoothing": 0.1},
+    }
+    assert args["allow_synthetic_data"] is False
+
+
+def test_trainer_rejects_what_workers_cannot_rebuild(tmp_path):
+    import torch
+
+    model = nn.Linear(4, 3)
+
+    class MyOpt(torch.optim.SGD):
+        pass
+
+    common = dict(cluster=_stub_cluster(tmp_path), dataset=object(), workers=1,
+                  model_factory="optimus.training.factories:mlp")
+    with pytest.raises(ValueError, match="cannot be rebuilt"):
+        Trainer(optimizer=MyOpt(model.parameters(), lr=0.1), **common)
+    with pytest.raises(ValueError, match="cannot be rebuilt"):
+        Trainer(loss_fn=torch.nn.functional.cross_entropy, **common)
+    with pytest.raises(ValueError, match="conflicts"):
+        Trainer(optimizer=torch.optim.SGD(model.parameters(), lr=0.1), lr=0.5, **common)
+
+
 # --- end-to-end worker process ----------------------------------------------
 
 def _run_worker(tmp_path, training_args):
@@ -196,6 +240,7 @@ def test_worker_trains_with_example_factories(tmp_path):
             "dataset_factory": "example.cifar10:build_dataset",
             "model_kwargs": {"num_classes": 10},
             "dataset_kwargs": {"synthetic_samples": 16},
+            "allow_synthetic_data": True,
             "epochs": 1,
             "batch_size": 8,
         },
@@ -209,7 +254,9 @@ def test_worker_trains_with_example_factories(tmp_path):
 
 
 def test_worker_legacy_default_model(tmp_path):
-    proc = _run_worker(tmp_path, {"model": "default", "num_samples": 32, "epochs": 1})
+    proc = _run_worker(
+        tmp_path, {"model": "default", "num_samples": 32, "epochs": 1, "allow_synthetic_data": True}
+    )
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
@@ -217,3 +264,41 @@ def test_worker_bad_factory_fails_fast(tmp_path):
     proc = _run_worker(tmp_path, {"model_factory": "no_such_module_xyz:build", "epochs": 1})
     assert proc.returncode != 0
     assert "Cannot import module 'no_such_module_xyz'" in proc.stdout + proc.stderr
+
+
+def test_worker_missing_dataset_fails_loudly(tmp_path):
+    """No dataset on the worker must be a hard failure, never silent random data."""
+    proc = _run_worker(tmp_path, {"model": "default", "epochs": 1})
+    out = proc.stdout + proc.stderr
+    assert proc.returncode != 0
+    assert "DatasetUnavailableError" in out
+    assert "/mnt/nfs-origin/optimus-test-no-such-dataset/v0" in out
+    assert "Training completed successfully" not in out
+
+
+def test_worker_rebuilds_optimizer_and_loss(tmp_path):
+    proc = _run_worker(
+        tmp_path,
+        {
+            "model": "default",
+            "num_samples": 16,
+            "epochs": 1,
+            "allow_synthetic_data": True,
+            "optimizer": {
+                "type": "SGD",
+                # unknown/None keys (e.g. from a newer torch on the controller) are dropped
+                "kwargs": {"lr": 0.05, "momentum": 0.9, "weight_decay": 1e-4,
+                           "fused": None, "not_a_real_option": 1},
+            },
+            "loss": {"type": "CrossEntropyLoss", "kwargs": {"label_smoothing": 0.1}},
+        },
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "Optimizer: SGD" in out and "'momentum': 0.9" in out
+    assert "loss: CrossEntropyLoss {'label_smoothing': 0.1}" in out
+
+
+def test_default_dataset_never_falls_back_when_dir_given(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        factories.default_dataset(str(tmp_path))

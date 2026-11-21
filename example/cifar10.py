@@ -74,8 +74,8 @@ def build_model(num_classes: int = 10) -> nn.Module:
 def build_dataset(data_dir: Optional[str], synthetic_samples: int = 100) -> Dataset:
     """
     Dataset factory: Trainer(dataset_factory="example.cifar10:build_dataset").
-    Loads the CIFAR-10 class folders with CIFAR normalization, or random 3x32x32
-    tensors when this worker has no copy of the dataset.
+    Loads the CIFAR-10 class folders with CIFAR normalization. ``data_dir`` is None
+    only when the job set ``allow_synthetic_data=True``; then it returns random tensors.
     """
     if data_dir:
         from torchvision import transforms
@@ -86,10 +86,7 @@ def build_dataset(data_dir: Optional[str], synthetic_samples: int = 100) -> Data
             transforms.ToTensor(),
             transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
         ])
-        try:
-            return ImageFolder(data_dir, transform=transform)
-        except (FileNotFoundError, RuntimeError):
-            pass  # no class subdirectories yet
+        return ImageFolder(data_dir, transform=transform)  # raises if no class folders
     return synthetic_dataset(
         num_samples=synthetic_samples,
         num_classes=len(CIFAR10_CLASSES),

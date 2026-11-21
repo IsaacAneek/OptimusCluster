@@ -4,6 +4,7 @@ Simplifies distributed training: the developer supplies the model, dataset, and 
 Optimus handles manifests, caching, scheduling, DDP, checkpointing, and recovery.
 """
 
+import inspect
 import json
 import logging
 import os
@@ -28,6 +29,58 @@ logger = logging.getLogger("optimus.trainer")
 
 
 FactoryArg = Union[str, Callable[..., Any], None]
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, torch.Tensor) and value.numel() == 1:
+        value = value.item()
+    if isinstance(value, tuple):
+        value = list(value)
+    json.dumps(value)  # raises TypeError if not serializable
+    return value
+
+
+def _optimizer_spec(optimizer: torch.optim.Optimizer) -> Dict[str, Any]:
+    """{"type": "SGD", "kwargs": {...}} for a built-in torch.optim optimizer."""
+    cls = type(optimizer)
+    if getattr(torch.optim, cls.__name__, None) is not cls:
+        raise ValueError(
+            f"Optimizer {cls.__module__}.{cls.__name__} cannot be rebuilt on workers; "
+            "use a built-in torch.optim optimizer"
+        )
+    if len(optimizer.param_groups) > 1:
+        raise ValueError("Per-parameter-group optimizer settings are not supported on workers yet")
+    kwargs = {}
+    for k, v in optimizer.defaults.items():
+        try:
+            kwargs[k] = _json_safe(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"Optimizer setting {k}={v!r} cannot be sent to workers") from None
+    return {"type": cls.__name__, "kwargs": kwargs}
+
+
+def _loss_spec(loss_fn: Any) -> Dict[str, Any]:
+    """{"type": "CrossEntropyLoss", "kwargs": {...}} for a built-in torch.nn loss module."""
+    cls = type(loss_fn)
+    if not isinstance(loss_fn, torch.nn.Module) or getattr(torch.nn, cls.__name__, None) is not cls:
+        raise ValueError(
+            f"loss_fn {getattr(loss_fn, '__name__', cls.__name__)} cannot be rebuilt on workers; "
+            "pass a built-in torch.nn loss instance such as nn.CrossEntropyLoss()"
+        )
+    kwargs = {}
+    for name in inspect.signature(cls).parameters:
+        if name in ("size_average", "reduce"):  # deprecated aliases of `reduction`
+            continue
+        if name in loss_fn._buffers:
+            if loss_fn._buffers[name] is not None:
+                raise ValueError(f"loss_fn tensor argument '{name}' cannot be sent to workers yet")
+            continue
+        if hasattr(loss_fn, name):
+            try:
+                kwargs[name] = _json_safe(getattr(loss_fn, name))
+            except (TypeError, ValueError):
+                raise ValueError(f"loss_fn setting {name} cannot be sent to workers") from None
+    return {"type": cls.__name__, "kwargs": kwargs}
 
 
 class Trainer:
@@ -63,7 +116,7 @@ class Trainer:
         epochs: int = 10,
         workers: Optional[int] = None,
         batch_size: int = 32,
-        lr: float = 0.01,
+        lr: Optional[float] = None,
         loss_fn: Optional[Any] = None,
         job_id: Optional[str] = None,
         *,
@@ -71,6 +124,7 @@ class Trainer:
         dataset_factory: FactoryArg = None,
         model_kwargs: Optional[Dict[str, Any]] = None,
         dataset_kwargs: Optional[Dict[str, Any]] = None,
+        allow_synthetic_data: bool = False,
     ):
         if dataset is None:
             raise ValueError("Trainer requires a dataset")
@@ -80,8 +134,18 @@ class Trainer:
         self.epochs = epochs
         self.workers = workers or cluster.config.scheduler.default_workers
         self.batch_size = batch_size
-        self.lr = lr
         self.loss_fn = loss_fn
+        self.allow_synthetic_data = allow_synthetic_data
+        # Workers rebuild the optimizer/loss from these specs; anything we cannot
+        # reproduce there is rejected here rather than silently replaced by SGD/CE.
+        self.optimizer_spec = _optimizer_spec(optimizer) if optimizer is not None else None
+        if self.optimizer_spec is not None:
+            opt_lr = self.optimizer_spec["kwargs"].get("lr")
+            if lr is not None and opt_lr is not None and lr != opt_lr:
+                raise ValueError(f"lr={lr} conflicts with the optimizer's lr={opt_lr}; pass only one")
+            lr = opt_lr
+        self.lr = 0.01 if lr is None else lr
+        self.loss_spec = _loss_spec(loss_fn) if loss_fn is not None else None
         self.job_id = job_id or f"job-{uuid.uuid4().hex[:8]}"
         self.metrics: Dict[str, Any] = {}
 
@@ -171,7 +235,12 @@ class Trainer:
             "lr": self.lr,
             "num_samples": getattr(self.dataset, "num_samples", 100),
             "logs_dir": self.cluster.config.logging.directory,
+            "allow_synthetic_data": self.allow_synthetic_data,
         }
+        if self.optimizer_spec is not None:
+            args["optimizer"] = self.optimizer_spec
+        if self.loss_spec is not None:
+            args["loss"] = self.loss_spec
         if self.dataset_factory is not None:
             args["dataset_factory"] = self.dataset_factory
             args["dataset_kwargs"] = self.dataset_kwargs
